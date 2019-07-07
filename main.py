@@ -2,51 +2,118 @@ import os
 import configparser
 import argparse
 
+from pipelines.HoughTransform import HoughTransform
 
+
+# global variables that dictate how the pipelines should be run
 camera = None
 file = None
-defaultInput = None
-showPipeline = False
+show_pipeline = False
+debug = False
+
+# set up config file reader
+__config = configparser.ConfigParser(allow_no_value=True)
+__config.read(r'./config.ini')
+
+def __main():
+  """
+  Configures run options based off of arguments and starts pipelines
+
+  :return: void
+  """
+
+  # use camera as input
+  if camera is not None:
+    source = camera
+
+  # use file as input
+  elif file is not None:
+    source = file
+
+  # use default as input
+  else:
+    defaultInput = __config['default']['input_source']
+    if defaultInput == 'file':
+      source = __get_abs_path(__config['default']['file_source'])
+    elif defaultInput == 'camera':
+      camera_type = __config['default']['camera_source']
+      source = int(__config['cameras'][camera_type])
+    else:
+      raise Exception('invalid default input type')
+
+  # start pipelines
+  HoughTransform(source, True, show_pipeline, debug)
 
 
-def main():
-    print(camera, file, defaultInput, showPipeline)
+def __parse_args():
+  """
+  Parses the command line arguments and sets necessary global flags accordingly
+
+  If no arguments are given, the defaults are used according to config.ini
+
+  Arguments:
+    --show-pipeline | -p    indicates whether each processing step in the pipeline should be displayed
+    --debug                 indicates whether debug statements should be printed and shows pipeline
+
+    Mutually Exclusive:     whichever argument is given is the input source used
+      --camera | -c         selects which camera should be used for input [webcam (w) or usb (u)]
+      --file | -f           path of file to use as input
+
+  :return: void
+  """
+
+  # add global keyword so we can modify global variables (dangerous, but make sense in this case)
+  global camera, file, show_pipeline, debug
+
+  # create argument parser and then parse them
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--show-pipeline', '-p', action='store_true')
+  parser.add_argument('--debug', action='store_true')
+  inputType = parser.add_mutually_exclusive_group(required=False)
+  inputType.add_argument('--camera', '-c', nargs=1, choices=['webcam', 'w', 'usb', 'u'], type=str)
+  inputType.add_argument('--file', '-f', nargs=1, type=str)
+  args = parser.parse_args()
+
+  # format arguments and set global variables
+  if args.camera is not None:
+    if args.camera[0] == 'webcam' or args.camera[0] == 'w':
+      camera = 'webcam'
+    elif args.camera[0] == 'usb' or args.camera[0] == 'u':
+      camera = 'usb'
+    else:
+      raise Exception('failed to set camera input')
+  elif args.file is not None:
+    file = __get_abs_path(args.file[0])
+  show_pipeline = args.show_pipeline
+  debug = args.debug
 
 
-def parse_args():
-    # add global keyword so we can modify global variables (dangerous, but make sense in this case)
-    global camera, file, defaultInput, showPipeline
+def __get_abs_path(path):
+  """
+  Gets the absolute path of a file
 
-    # create argument parser and then parse them
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--show-pipeline', '-p', action='store_true')
-    inputType = parser.add_mutually_exclusive_group(required=False)
-    inputType.add_argument('--camera', '-c', nargs=1, choices=['webcam', 'w', 'usb', 'u'], type=str)
-    inputType.add_argument('--file', '-f', nargs=1, type=str)
-    args = parser.parse_args()
+  This method is susceptible to raise any errors caused by os.path.abspath(path)
 
-    # set up config file reader
-    config = configparser.ConfigParser(allow_no_value=True)
-    config.read(r'./config.ini')
+  :param path: The file path to be made absolute (can be either relative or absolute)
+  :raises: Exception is raised if the given file path does not exist
+  :return: The absolute version of the given path
+  :rtype: str
+  """
 
-    # format arguments and set global variables
-    if args.camera is not None:
-        if args.camera[0] == 'webcam' or args.camera[0] == 'w':
-            camera = 'webcam'
-        elif args.camera[0] == 'usb' or args.camera[0] == 'u':
-            camera = 'usb'
-        else:
-            raise Exception('failed to set camera input')
-    if args.file is not None:
-        if os.path.exists(args.file[0]):
-            file = os.path.abspath(args.file[0])
-        else:
-            raise Exception('given file path does not exist')
-    defaultInput = config['default']['input_source']
-    showPipeline = args.show_pipeline
+  # check if the file path exists
+  if os.path.exists(path):
+    # get the absolute file path
+    return os.path.abspath(path)
+  raise Exception('given file path does not exist')
 
-
-# calls the main() function
 if __name__ == '__main__':
-  parse_args()
-  main()
+  """
+  Parses arguments and calls the main() function
+  
+  Invoked when the script is called from the command line via python main.py
+  """
+
+  # parse arguments
+  __parse_args()
+  # call main()
+  __main()
