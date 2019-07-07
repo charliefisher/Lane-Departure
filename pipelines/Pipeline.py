@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import cv2
+import time
 
 
 class Pipeline(ABC):
@@ -52,11 +53,14 @@ class Pipeline(ABC):
 
     # open input
     self.__open_source(self.__source)
+    # get fps of video
+    fps = self._capture.get(cv2.CAP_PROP_FPS)
     # loop run() while the capture is open and we we have not stopped running
     while not self.__stop and self._capture.isOpened():
+      # store start time of loop
+      start_time = time.time()
       # read a frame of the capture
       return_value, frame = self._capture.read()
-
       # check that the next frame was read successfully
       # i.e. that we have not hit the end of the video or encountered an error
       if return_value:
@@ -67,6 +71,11 @@ class Pipeline(ABC):
       else:
         # stop the pipeline if we hit the end of the video or encountered an error
         self.stop()
+      # only sleep if stop was not called (i.e. we will read the next frame)
+      if not self.__stop:
+        # 1 second / fps = time to sleep for each frame subtract elapsed time
+        time_to_sleep = max(1 / fps - (time.time() - start_time), 0)
+        time.sleep(time_to_sleep)
 
   @classmethod
   def __open_source(self, input):
