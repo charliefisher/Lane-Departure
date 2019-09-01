@@ -165,9 +165,10 @@ class HoughTransform(Pipeline):
     result = cv2.addWeighted(frame, 0.8, lines_overlay, 1, 0)
     self._add_knot('Final Result', result)
 
-    # plot.imshow(canny)
-    # plot.show()
-    # time.sleep(10)
+    if self._debug:
+      plot.imshow(canny)
+      plot.show()
+      time.sleep(10)
 
     if self._show_pipeline:
       self._display_pipeline()

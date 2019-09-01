@@ -36,7 +36,7 @@ class Pipeline(ABC, Process):
   # set up static variables from config file
   SCREEN_WIDTH = int(__config['window']['width'])
   SCREEN_HEIGHT = int(__config['window']['height'])
-  FINAL_IMAGE_RATIO = float(__config['display']['final_image_ratio'])
+  MININIUM_FINAL_IMAGE_RATIO = float(__config['display']['minimum_final_image_ratio'])
   FONT_FACE = vars(cv2)[__config['font']['font_face']]
   FONT_COLOR = tuple(map(int, re.sub('\(|\)| ', '', __config['font']['color']).split(',')))
   FONT_THICKNESS = int(__config['font']['thickness'])
@@ -204,12 +204,14 @@ class Pipeline(ABC, Process):
       position = (start_x + Pipeline.FONT_EDGE_OFFSET, start_y + text_height + Pipeline.FONT_EDGE_OFFSET)
       cv2.putText(self._screen, title, position, Pipeline.FONT_FACE, Pipeline.FONT_SCALE, Pipeline.FONT_COLOR, Pipeline.FONT_THICKNESS)
 
+    # split the pipeline into the final and intermediate steps
     pipeline_steps = self._pipeline[:-1]
     final_step = self._pipeline[-1]
     num_pipeline_steps = len(pipeline_steps)
 
     # display the steps of the pipeline only if that option is selected
     if self.__show_pipeline_steps and num_pipeline_steps > 0:
+      # initialize the aspect ratio (gets set later when the pipeline is checked for consistent aspect ratios)
       aspect_ratio = None
       # check that all steps of the pipeline have the same aspect ratio (if not raise and error)
       # simultaneously, check if any images are single channel and convert them to the correct number of channels
@@ -229,57 +231,83 @@ class Pipeline(ABC, Process):
         # if the image is single channel (grayscale), convert it to 3 channels (still grayscale)
         # this allows the images to be merged into one
         if num_channels == 1:
-          temp = numpy.empty((height, width, Pipeline.NUM_IMAGE_CHANNELS))
+          temp_image = numpy.empty((height, width, Pipeline.NUM_IMAGE_CHANNELS))
           for channel in range(Pipeline.NUM_IMAGE_CHANNELS):
-            temp[:, :, channel] = image
-          image = temp
+            temp_image[:, :, channel] = image
           if i < num_pipeline_steps:
-            pipeline_steps[i] = (name, image)
+            pipeline_steps[i] = (name, temp_image)
           else:
-            final_step = (name, image)
+            final_step = (name, temp_image)
 
       # return the next lowest square greater than num
       next_square = lambda num: int(round(math.pow(math.ceil(math.sqrt(abs(num))), 2)))
 
-      # num_bins_per_quarter = next_square(math.ceil(num_pipeline_steps / 2))
-      num_bins_per_quarter = next_square(math.ceil(num_pipeline_steps * Pipeline.FINAL_IMAGE_RATIO))
-      horizontal_bins_dimension = int(round(math.sqrt(num_bins_per_quarter)))
-      vertical_bins_dimension = 2 * horizontal_bins_dimension
+      # the actual ratio of the final image (will be grater than or equal to Pipeline.MININIUM_FINAL_IMAGE_RATIO)
+      RESULT_IMAGE_RATIO = Pipeline.MININIUM_FINAL_IMAGE_RATIO
+      # initialize variables concerned with the size of pipeline step bins
+      # (will get set later when calculating RESULT_IMAGE_RATIO)
+      num_bins_top_left = None
+      horizontal_bins_dimension = None
+      vertical_bins_dimension = None
 
-      # if int(1 / Pipeline.FINAL_IMAGE_RATIO) != int(round(1 / Pipeline.FINAL_IMAGE_RATIO)):
-      #   raise Exception("This ratio doesn't work boiii")
-      #
-      # vertical_bins_dimension = (1 / Pipeline.FINAL_IMAGE_RATIO) * horizontal_bins_dimension
+      # minimic a do-while loop
+      while True:
+        def calculate_dimensions_given_ratio(ratio):
+          """
+          Calculates pipeline step bin dimensions given a ratio for the final step of the pipeline
 
-      container_width = int(round(Pipeline.SCREEN_WIDTH * (1 - Pipeline.FINAL_IMAGE_RATIO)))
+          :param ratio: the ratio of the final step of the pipeline to the rest of the screen
+          :return: void
+          """
 
+          # allow this function to modify specific variables in outer scope
+          nonlocal num_bins_top_left, horizontal_bins_dimension, vertical_bins_dimension
+          # do the bin calculations
+          num_bins_top_left = next_square(math.ceil(num_pipeline_steps * (1 - ratio)))
+          horizontal_bins_dimension = int(round(math.sqrt(num_bins_top_left)))
+          vertical_bins_dimension = math.pow(1 - ratio, -1) * horizontal_bins_dimension
+
+        # calculate the bin dimensions for the current ratio
+        calculate_dimensions_given_ratio(RESULT_IMAGE_RATIO)
+        # if the number of vertical bins is an integer (divides evenly into the screen), then break the loop
+        # (the while condition of the do-while loop)
+        if vertical_bins_dimension.is_integer():
+          break
+        # store the previously calculated ratio
+        prev = RESULT_IMAGE_RATIO
+        # calculate the new ratio to use
+        RESULT_IMAGE_RATIO = 1 - horizontal_bins_dimension / math.ceil(vertical_bins_dimension)
+        # due to floating point precision errors, sometimes repeating decimals get rounded in an undesirable manner
+        # essentially, the program has successfully found the desired ratio, but rounds it causing the program to fail
+        # if this occurs, raise an error and instruct the user to fix the rounding error and update the value in Pipeline.config
+        if prev == RESULT_IMAGE_RATIO:
+          raise Exception('Failed trying to find best ratio for result image. This was caused by a floating point decimal error on repeating digits. Update the pipeline.config file and try again. The recomended ratio is {} (simply fix the repeating decimals)'.format(RESULT_IMAGE_RATIO))
+
+      # calculate the dimensions of a pipeline step
+      container_width = int(round(Pipeline.SCREEN_WIDTH * (1 - RESULT_IMAGE_RATIO)))
       step_width = container_width // horizontal_bins_dimension
       step_height = int(round(step_width * aspect_ratio))
-
-      print('bins are XxY', horizontal_bins_dimension, 'x', vertical_bins_dimension)
-      print('step is XxY', step_width, 'x', step_height)
 
       # iterate through all but the final step and display those knots in the pipeline
       i = 0
       for name, image in pipeline_steps:
         # add the knot to the screen at the correct position
-        # start_y = step_height * (i // int(round(math.ceil(num_pipeline_steps / vertical_bins_dimension))))
         start_y = step_height * (i // horizontal_bins_dimension)
         start_x = step_width * (i % horizontal_bins_dimension)
-        print('adding knot at (', start_x, ', ', start_y, ')')
         add_knot_to_screen(i + 1, knot=(name, image), new_dimension=(step_width, step_height), position=(start_y, start_x))
 
         i += 1
 
       # add the final step to the screen in the bottom left quarter
-      output_width = int(round(Pipeline.SCREEN_WIDTH * Pipeline.FINAL_IMAGE_RATIO))
-      output_height = int(round(Pipeline.SCREEN_HEIGHT * Pipeline.FINAL_IMAGE_RATIO))
+      output_width = int(round(Pipeline.SCREEN_WIDTH * RESULT_IMAGE_RATIO))
+      output_height = int(round(Pipeline.SCREEN_HEIGHT * RESULT_IMAGE_RATIO))
       add_knot_to_screen(len(self._pipeline), knot=final_step, new_dimension=(output_width, output_height), position=(Pipeline.SCREEN_HEIGHT-output_height, Pipeline.SCREEN_WIDTH-output_width))
 
       cv2.imshow(self._name, self._screen)
     else:
       name, image = final_step
       cv2.imshow(self._name, image)
+
     # reset the pipeline now that it has been displayed
     self._clear_pipeline()
 
