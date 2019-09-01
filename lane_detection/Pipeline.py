@@ -32,7 +32,7 @@ class Pipeline(ABC, Process):
 
   # set up config file reader
   __config = ConfigParser(allow_no_value=True)
-  __config.read(path.join(path.dirname(__file__), r'./Pipeline.conf'))
+  __config.read(path.join(path.dirname(__file__), r'./Pipeline.config'))
   # set up static variables from config file
   SCREEN_WIDTH = int(__config['window']['width'])
   SCREEN_HEIGHT = int(__config['window']['height'])

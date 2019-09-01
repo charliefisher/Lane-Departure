@@ -16,7 +16,7 @@ class HoughTransform(Pipeline):
 
   # set up config file reader
   __config = ConfigParser(allow_no_value=True)
-  __config.read(path.join(path.dirname(__file__), r'./HoughTransform.conf'))
+  __config.read(path.join(path.dirname(__file__), r'./HoughTransform.config'))
   # set up static variables from config file
   MIN_SLOPE_MAGNITUDE = float(__config['lines']['min_slope_magnitude'])
   NUM_LANES_TO_DETECT = int(__config['lines']['num_lanes_to_detect'])
