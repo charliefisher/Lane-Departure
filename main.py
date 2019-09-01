@@ -1,23 +1,23 @@
 import os
-import configparser
-import argparse
+from configparser import ConfigParser
+from argparse import ArgumentParser
 
-from pipelines.HoughTransform import HoughTransform
+from lane_detection.HoughTransform import HoughTransform
 
 
-# global variables that dictate how the pipelines should be run
+# global variables that dictate how the lane detection lane_detection should be run
 camera = None
 file = None
 show_pipeline = False
 debug = False
 
 # set up config file reader
-__config = configparser.ConfigParser(allow_no_value=True)
+__config = ConfigParser(allow_no_value=True)
 __config.read(r'./config.ini')
 
 def __main():
   """
-  Configures run options based off of arguments and starts pipelines
+  Configures run options based off of arguments and starts lane_detection
 
   :return: void
   """
@@ -41,9 +41,9 @@ def __main():
     else:
       raise Exception('invalid default input type')
 
-  # start pipelines
-  HoughTransform(source, True, show_pipeline, debug)
-
+  # start lane_detection
+  # a = HoughTransform(source, True, show_pipeline, debug)
+  a = HoughTransform(source, True, True, debug)
 
 def __parse_args():
   """
@@ -66,7 +66,7 @@ def __parse_args():
   global camera, file, show_pipeline, debug
 
   # create argument parser and then parse them
-  parser = argparse.ArgumentParser()
+  parser = ArgumentParser()
   parser.add_argument('--show-pipeline', '-p', action='store_true')
   parser.add_argument('--debug', action='store_true')
   inputType = parser.add_mutually_exclusive_group(required=False)
@@ -110,7 +110,7 @@ if __name__ == '__main__':
   """
   Parses arguments and calls the main() function
   
-  Invoked when the script is called from the command line via python main.py
+  Invoked when the script is called from the command line via 'python main.py'
   """
 
   # parse arguments
