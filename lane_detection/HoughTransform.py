@@ -1,5 +1,6 @@
 from configparser import ConfigParser
 from os import path
+import re
 import cv2
 import numpy
 import math
@@ -18,9 +19,24 @@ class HoughTransform(Pipeline):
   __config = ConfigParser(allow_no_value=True)
   __config.read(path.join(path.dirname(__file__), r'./HoughTransform.config'))
   # set up static variables from config file
-  MIN_SLOPE_MAGNITUDE = float(__config['lines']['min_slope_magnitude'])
-  NUM_LANES_TO_DETECT = int(__config['lines']['num_lanes_to_detect'])
-  K_MEANS_NUM_ATTEMPTS = 10
+  MIN_SLOPE_MAGNITUDE = float(__config['lanes']['min_slope_magnitude'])
+  NUM_LANES_TO_DETECT = int(__config['lanes']['num_to_detect'])
+
+  GAUSSIAN_BLUR_KERNEL_SIZE = tuple(map(int, re.sub('\(|\)| ', '', __config['gaussian blur']['kernel_size']).split(',')))
+  GAUSSIAN_BLUR_DEVIATION = float(__config['gaussian blur']['deviation'])
+
+  CANNY_LOWER_THRESHOLD = int(__config['canny']['lower_threshold'])
+  CANNY_UPPER_THRESHOLD = int(__config['canny']['upper_threshold'])
+
+  HOUGH_LINES_RHO_PIXELS = int(__config['hough lines']['rho'])
+  HOUGH_LINES_THETA_DEGREES = float(__config['hough lines']['theta'])
+  HOUGH_LINES_THRESHOLD = int(__config['hough lines']['threshold'])
+  HOUGH_LINES_MIN_LINE_LENGTH = int(__config['hough lines']['min_line_length'])
+  HOUGH_LINES_MAX_LINE_GAP = int(__config['hough lines']['max_line_gap'])
+
+  K_MEANS_MAX_ITER = int(__config['k means']['max_iter'])
+  K_MEANS_EPSILON = float(__config['k means']['epsilon'])
+  K_MEANS_NUM_ATTEMPTS = int(__config['k means']['num_attempts'])
 
   def __init__(self, source, should_start, show_pipeline, debug):
     """
@@ -32,8 +48,8 @@ class HoughTransform(Pipeline):
     :param debug: a flag indicating whether or not the use is debugging the pipeline. In debug, the pipeline is
                   shown and debug statements are enabled
     """
-
-    super().__init__(source, should_start, show_pipeline, debug)
+    self.__region_of_interest = []
+    super().__init__(source, should_start, show_pipeline, debug, True)
 
   def _canny(self, image):
     grayscale = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -41,27 +57,13 @@ class HoughTransform(Pipeline):
     # 5x5 kernel
     # deviation of 0
     # reduces noise in grayscale image
-    blurred = cv2.GaussianBlur(grayscale, (5, 5), 0)
+    blurred = cv2.GaussianBlur(grayscale, HoughTransform.GAUSSIAN_BLUR_KERNEL_SIZE, HoughTransform.GAUSSIAN_BLUR_DEVIATION)
     self._add_knot('Gaussian Blur', blurred)
     # canny auto applies guassian blur anyhow
     # canny should have ratio of 1:2 or 1:3 above counts as leading edge, below is rejected between is accepted if it is touching a leading edge
-    canny = cv2.Canny(blurred, 50, 150)
+    canny = cv2.Canny(blurred, HoughTransform.CANNY_LOWER_THRESHOLD, HoughTransform.CANNY_UPPER_THRESHOLD)
     self._add_knot('Canny', canny)
     return canny
-
-  def _region_of_interest(self, image):
-    # height = image.shape[0]
-    # width = image.shape[1]
-    roi = numpy.array([
-      [(100, 500), (1250, 500), (800, 200), (500, 200)]
-    ])
-    mask = numpy.zeros_like(image)
-    # 255 indicates roi is all white
-    cv2.fillPoly(mask, roi, 255)
-    # mask the provided image based on the roi
-    masked = cv2.bitwise_and(image, mask)
-    self._add_knot('Region Of Interest Mask', masked)
-    return masked
 
   def _display_lines(self, image, lines):
     line_image = numpy.zeros_like(image)
@@ -111,8 +113,13 @@ class HoughTransform(Pipeline):
     # convert lane_lines to numpy.float32
     lane_lines = numpy.float32(lane_lines)
 
+    type = 0
+    if HoughTransform.K_MEANS_EPSILON > 0:
+      type += cv2.TERM_CRITERIA_EPS
+    if HoughTransform.K_MEANS_MAX_ITER > 0:
+      type += cv2.TERM_CRITERIA_MAX_ITER
     # define criteria for k means
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 500, 1.0)
+    criteria = (type, HoughTransform.K_MEANS_MAX_ITER, HoughTransform.K_MEANS_EPSILON)
     # criteria = (cv2.TERM_CRITERIA_EPS, 0, 0.5)
     # run k means
     compactness, labels, centers = cv2.kmeans(lane_lines, HoughTransform.NUM_LANES_TO_DETECT, None, criteria, HoughTransform.K_MEANS_NUM_ATTEMPTS, cv2.KMEANS_RANDOM_CENTERS)
@@ -126,7 +133,6 @@ class HoughTransform(Pipeline):
       # add the cluster's average lane to the matrix of lane lines
       lanes = numpy.append(lanes, averaged_lane, axis=0)
     return self._lines_as_slope_intercept_to_cords(lanes)
-
 
   def _run(self, frame):
     """
@@ -143,6 +149,12 @@ class HoughTransform(Pipeline):
     frame = numpy.copy(frame)
     self._add_knot('Raw', frame)
     canny = self._canny(frame)
+
+    if self._debug:
+      plot.imshow(canny)
+      plot.show()
+      time.sleep(7.5)
+
     masked = self._region_of_interest(canny)
     # row is distance accumulator in pixels
     # theta is angle accumulator in radians
@@ -151,7 +163,7 @@ class HoughTransform(Pipeline):
     # placehold array is required (empty)
     # any traced lines of length less than minLineLength are rejected
     # max line gap is the maximum distance in pixels between segmented lines which we will allow to be connected as one
-    hough_lines = cv2.HoughLinesP(masked, 2, numpy.pi/180, 100, numpy.array([]), minLineLength=40, maxLineGap=5)
+    hough_lines = cv2.HoughLinesP(masked, HoughTransform.HOUGH_LINES_RHO_PIXELS, numpy.deg2rad(HoughTransform.HOUGH_LINES_THETA_DEGREES), HoughTransform.HOUGH_LINES_THRESHOLD, numpy.array([]), minLineLength=HoughTransform.HOUGH_LINES_MIN_LINE_LENGTH, maxLineGap=HoughTransform.HOUGH_LINES_MAX_LINE_GAP)
 
     hough_overlay = self._display_lines(frame, hough_lines)
     hough_result_raw = cv2.addWeighted(frame, 0.8, hough_overlay, 1, 0)
@@ -164,11 +176,6 @@ class HoughTransform(Pipeline):
     # last value is gamma value that is added to sum
     result = cv2.addWeighted(frame, 0.8, lines_overlay, 1, 0)
     self._add_knot('Final Result', result)
-
-    if self._debug:
-      plot.imshow(canny)
-      plot.show()
-      time.sleep(10)
 
     if self._show_pipeline:
       self._display_pipeline()

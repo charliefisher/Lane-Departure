@@ -103,5 +103,9 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-#PyCharm Files
+# PyCharm Files
 .idea/
+
+# Execution Artificats
+source_settings.ini
+HoughTransform_Pipeline
