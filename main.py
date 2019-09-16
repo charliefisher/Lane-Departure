@@ -43,6 +43,7 @@ def __main():
 
   # start lane_detection
   # a = HoughTransform(source, True, show_pipeline, debug)
+  # source = 0
   a = HoughTransform(source, True, True, debug)
 
 def __parse_args():

@@ -15,11 +15,14 @@ class HoughTransform(Pipeline):
   Explain Hough Transform here
   """
 
+  DEGREE_TO_FIT_TO_HOUGH_LINES = 1
+
   # set up config file reader
   __config = ConfigParser(allow_no_value=True)
   __config.read(path.join(path.dirname(__file__), r'./HoughTransform.config'))
   # set up static variables from config file
   MIN_SLOPE_MAGNITUDE = float(__config['lanes']['min_slope_magnitude'])
+  MAX_SLOPE_MAGNITUDE = float(__config['lanes']['max_slope_magnitude'])
   NUM_LANES_TO_DETECT = int(__config['lanes']['num_to_detect'])
 
   GAUSSIAN_BLUR_KERNEL_SIZE = tuple(map(int, re.sub('\(|\)| ', '', __config['gaussian blur']['kernel_size']).split(',')))
@@ -48,91 +51,194 @@ class HoughTransform(Pipeline):
     :param debug: a flag indicating whether or not the use is debugging the pipeline. In debug, the pipeline is
                   shown and debug statements are enabled
     """
-    self.__region_of_interest = []
+
+    self.__past_detected = numpy.empty((0, HoughTransform.NUM_LANES_TO_DETECT, 2))
     super().__init__(source, should_start, show_pipeline, debug, True)
 
   def _canny(self, image):
+    """
+    Converts and image to grayscale, applies a gaussian blur, and then applies a canny function. The gaussian blur is
+    somewhat redundant as the canny function already applies a gaussian blur (however this gives more control, allowing
+    for a large gaussian kernel to be used if desired).
+
+    :param image: the image to apply the grayscale conversion, gaussian blur and canny function on
+    :return: canny: the resulting image after the operations are applied to it
+    """
+
+    # convert image to grayscale and add it to pipeline
     grayscale = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     self._add_knot('Grayscale', grayscale)
-    # 5x5 kernel
-    # deviation of 0
-    # reduces noise in grayscale image
+
+    # apply gaussian blur, reducing noise in grayscale image, reducing the effect of undesired lines
+    # this is somehwhat redundant as canny already applies a gaussian blur but gives more controlling allowing for a
+    # larger kernel to be used (if desired)
     blurred = cv2.GaussianBlur(grayscale, HoughTransform.GAUSSIAN_BLUR_KERNEL_SIZE, HoughTransform.GAUSSIAN_BLUR_DEVIATION)
     self._add_knot('Gaussian Blur', blurred)
-    # canny auto applies guassian blur anyhow
-    # canny should have ratio of 1:2 or 1:3 above counts as leading edge, below is rejected between is accepted if it is touching a leading edge
-    canny = cv2.Canny(blurred, HoughTransform.CANNY_LOWER_THRESHOLD, HoughTransform.CANNY_UPPER_THRESHOLD)
+
+    # 4 , -600
+    alpha = 1
+    beta = 0
+    modified = cv2.convertScaleAbs(blurred, -1, alpha, beta)
+    self._add_knot('Modified', modified)
+
+    # apply canny function to image
+    # canny should have ratio of 1:2 or 1:3
+    # above threshold counts as leading edge
+    # below threshold is rejected
+    # between thresholds is accepted if it is touching a leading edge
+    # canny = cv2.Canny(blurred, HoughTransform.CANNY_LOWER_THRESHOLD, HoughTransform.CANNY_UPPER_THRESHOLD)
+    canny = cv2.Canny(modified, HoughTransform.CANNY_LOWER_THRESHOLD, HoughTransform.CANNY_UPPER_THRESHOLD)
     self._add_knot('Canny', canny)
     return canny
 
-  def _display_lines(self, image, lines):
-    line_image = numpy.zeros_like(image)
-    if lines is not None:
-      # print('lines', lines)
-      for line in lines:
-        x1, y1, x2, y2 = line.reshape(4)
-        # point 1, point 2, color of lines
-        # line thickness in pixels
-        cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 10)
-    self._add_knot('Lines', line_image)
-    return line_image
+  def _convert_line_from_slope_intercept_to_cords(self, line):
+    if not line.all():
+      return None
+    m, b = line
+    y1 = 500
+    y2 = 200
+    x1 = int((y1 - b) / m)
+    x2 = int((y2 - b) / m)
+    return numpy.array([x1, y1, x2, y2], numpy.int32).reshape(4)
 
-  def _lines_as_slope_intercept_to_cords(self, lines):
+  def _convert_lines_from_slope_intercept_to_cords(self, lines):
     cord_lines = numpy.empty((0, 4), numpy.int32)
     for line in lines:
-      m, b = line
-      y1 = 500
-      y2 = 200
-      x1 = int((y1 - b) / m)
-      x2 = int((y2 - b) / m)
-      cord_lines = numpy.append(cord_lines, numpy.array([x1, y1, x2, y2]).reshape((1, 4)), axis=0)
+      cords = self._convert_line_from_slope_intercept_to_cords(line)
+      cord_lines = numpy.append(cord_lines, cords, axis=0)
     return cord_lines
 
+  def _display_lines(self, image, lines, display_overlay=True, overlay_name='Lines'):
+    line_image = numpy.zeros_like(image)
+    if lines is not None:
+      for line in lines:
+        if line.shape[0] == 2:
+          line = self._convert_line_from_slope_intercept_to_cords(line)
+        if line is not None:
+          x1, y1, x2, y2 = line.reshape(4)
+          # point 1, point 2, color of lines
+          # line thickness in pixels
+          cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 10)
+    if display_overlay:
+      self._add_knot(overlay_name, line_image)
+    return line_image
 
-  def _clean_lines(self, dirty_lines):
-    DEGREE_TO_FIT_TO_HOUGH_LINES = 1
-    # create a matrix to hold the lines that should be kept (i.e. met the MIN_SLOPE_MAGNITUDE criteria)
-    lane_lines = numpy.empty((0, DEGREE_TO_FIT_TO_HOUGH_LINES + 1), numpy.float64)
-    # catch case where no lines were detected
+
+  def _filter_hough_lines_on_slope(self, dirty_lines):
+    # create a matrix to hold the lines that should be kept (i.e. met the slope criterion)
+    lane_lines = numpy.empty((0, HoughTransform.DEGREE_TO_FIT_TO_HOUGH_LINES + 1), numpy.float64)
     if dirty_lines is None:
       return lane_lines
+    # iterate through the lanes and only keep the lines meeting the specified criteria
     for line in dirty_lines:
       # reshape the line into coordinates
       x1, y1, x2, y2 = line.reshape(4)
       # fit a line to the coordinates and get the returned slope and intercept
-      m, b = numpy.polyfit((x1, x2), (y1, y2), DEGREE_TO_FIT_TO_HOUGH_LINES)
-      # if the slope is greater than the MIN_SLOPE_MAGNITUDE, add it to the lanes_lines matrix
-      if math.fabs(m) >= HoughTransform.MIN_SLOPE_MAGNITUDE:
+      m, b = numpy.polyfit((x1, x2), (y1, y2), HoughTransform.DEGREE_TO_FIT_TO_HOUGH_LINES)
+      m_magnitude = math.fabs(m)
+      # if the slope is in the interval specified by MIN_SLOPE_MAGNITUDE and MAX_SLOPE_MAGNITUDE, add it to the
+      # lanes_lines matrix
+      if m_magnitude >= HoughTransform.MIN_SLOPE_MAGNITUDE and m_magnitude <= HoughTransform.MAX_SLOPE_MAGNITUDE:
         lane_lines = numpy.append(lane_lines, numpy.array([[m, b]]), axis=0)
+    return lane_lines
 
-    # create a matrix of lanes that each cluster's average will be added to
-    lanes = numpy.empty((0, DEGREE_TO_FIT_TO_HOUGH_LINES + 1), numpy.float64)
-    # catch case where number of lines detected is less than the number of lines to detect
-    if len(lane_lines) < HoughTransform.NUM_LANES_TO_DETECT:
-      return self._lines_as_slope_intercept_to_cords(lane_lines)
-    # convert lane_lines to numpy.float32
-    lane_lines = numpy.float32(lane_lines)
+  def _classify_lanes(self, lane_lines):
+    num_lines, *remaining = lane_lines.shape
+    labels = numpy.empty((num_lines,))
 
-    type = 0
-    if HoughTransform.K_MEANS_EPSILON > 0:
-      type += cv2.TERM_CRITERIA_EPS
-    if HoughTransform.K_MEANS_MAX_ITER > 0:
-      type += cv2.TERM_CRITERIA_MAX_ITER
-    # define criteria for k means
-    criteria = (type, HoughTransform.K_MEANS_MAX_ITER, HoughTransform.K_MEANS_EPSILON)
-    # criteria = (cv2.TERM_CRITERIA_EPS, 0, 0.5)
-    # run k means
-    compactness, labels, centers = cv2.kmeans(lane_lines, HoughTransform.NUM_LANES_TO_DETECT, None, criteria, HoughTransform.K_MEANS_NUM_ATTEMPTS, cv2.KMEANS_RANDOM_CENTERS)
-    # flatten labels so they can be used for boolean indexing
-    labels = labels.flatten()
-    for i in range(HoughTransform.NUM_LANES_TO_DETECT):
-      # get the average of each cluster
-      averaged_lane = numpy.average(lane_lines[labels == i], axis=0)
-      # reshape it to a 1x2 matrix
-      averaged_lane = averaged_lane.reshape(1, 2)
-      # add the cluster's average lane to the matrix of lane lines
-      lanes = numpy.append(lanes, averaged_lane, axis=0)
-    return self._lines_as_slope_intercept_to_cords(lanes)
+    for i in range(num_lines):
+      m, b = lane_lines[i]
+      labels[i] = int(m > 0)
+    return labels
+
+
+  def _get_closeness(self, collection):
+    num_datapoints, data_dimension = collection.shape
+
+    closeness = numpy.empty((num_datapoints, data_dimension), numpy.float64)
+    for i in range(num_datapoints):
+      squared_distances = numpy.empty((num_datapoints - 1, data_dimension), numpy.float64)
+      other_datapoints = collection[numpy.arange(num_datapoints) != i]
+      for j in range(num_datapoints-1):
+        squared_distances[j] = numpy.power(numpy.fabs(collection[i] - other_datapoints[j]), 2)
+      closeness[i] = numpy.sum(squared_distances, axis=0)
+    return closeness
+
+
+  def _apply_closeness_filter(self, collection, percent_change_threshold):
+    closeness = self._get_closeness(collection)
+    num_datapoints, data_dimension = collection.shape
+
+    for i in range(data_dimension):
+      indices = closeness[:, i].argsort()
+      sorted_closeness_cur_column = closeness[indices][:, i]
+      not_close_index = len(sorted_closeness_cur_column)
+      for j in range(num_datapoints-1):
+        current_closeness = sorted_closeness_cur_column[j]
+        next_closeness = sorted_closeness_cur_column[j + 1]
+        percent_change = (next_closeness - current_closeness) / abs(current_closeness) * 100
+        if percent_change >= percent_change_threshold:
+          not_close_index = j + 1
+          break
+
+      collection = collection[indices][0:not_close_index, :]
+      closeness = closeness[indices][0:not_close_index, :]
+      num_datapoints = not_close_index
+    return collection
+
+  def _get_weighted_historic_average(self, historic_lines, column):
+    def weighting_function(fps, x):
+      k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - math.pow( math.e, (-0.05016553 * fps)))
+      b = 0.020833333*fps+1.5
+      return numpy.exp(k*x+b)
+
+
+    num_past_stored, *remaining = historic_lines.shape
+    if num_past_stored == 0:
+      return None
+
+    return numpy.average(historic_lines[:, column, :], axis=0, weights=weighting_function(self._fps, numpy.arange(historic_lines.shape[0])))
+
+  def _historic_fill(self, column):
+    return self._get_weighted_historic_average(self.__past_detected, column)
+
+
+
+
+
+    # # convert lane_lines to numpy.float32
+    # lane_lines = numpy.float32(lane_lines)
+    #
+    # type = 0
+    # if HoughTransform.K_MEANS_EPSILON > 0:
+    #   type += cv2.TERM_CRITERIA_EPS
+    # if HoughTransform.K_MEANS_MAX_ITER > 0:
+    #   type += cv2.TERM_CRITERIA_MAX_ITER
+    # # define criteria for k means
+    # criteria = (type, HoughTransform.K_MEANS_MAX_ITER, HoughTransform.K_MEANS_EPSILON)
+    # # criteria = (cv2.TERM_CRITERIA_EPS, 0, 0.5)
+    # # run k means
+    # compactness, labels, centers = cv2.kmeans(lane_lines, HoughTransform.NUM_LANES_TO_DETECT, None, criteria, HoughTransform.K_MEANS_NUM_ATTEMPTS, cv2.KMEANS_RANDOM_CENTERS)
+    # # flatten labels so they can be used for boolean indexing
+    # labels = labels.flatten()
+
+    # for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+    #   lines_in_cluster = lane_lines[labels == i]
+      # print('labeled', lines_in_cluseter)
+      # mu, sigma = numpy.mean(lines_in_cluseter, axis=0), numpy.std(lines_in_cluseter, axis=0, ddof=1)
+      # print('mu, sigma', mu, sigma)
+      # print(sigma[~numpy.isnan(sigma)])
+      # print('simga', numpy.isfinite(sigma[0]) and numpy.isfinite(sigma[1]))
+      # if numpy.isfinite(sigma[0]) and numpy.isfinite(sigma[1]):
+      #   print('filter')
+      #   lines_in_cluseter = lines_in_cluseter[numpy.all(numpy.abs(lines_in_cluseter - mu) < 1.0*sigma, axis=1)]
+      #   compactness, labels, centers = cv2.kmeans(lines_in_cluseter, 1, None, criteria, HoughTransform.K_MEANS_NUM_ATTEMPTS, cv2.KMEANS_RANDOM_CENTERS)
+      #   print('lables', labels)
+      #   print('lines_in_cluster', lines_in_cluseter)
+      #   print(len(labels) == len(lines_in_cluseter))
+      #   lines_in_cluseter = lines_in_cluseter[labels == i]
+
+
 
   def _run(self, frame):
     """
@@ -166,16 +272,72 @@ class HoughTransform(Pipeline):
     hough_lines = cv2.HoughLinesP(masked, HoughTransform.HOUGH_LINES_RHO_PIXELS, numpy.deg2rad(HoughTransform.HOUGH_LINES_THETA_DEGREES), HoughTransform.HOUGH_LINES_THRESHOLD, numpy.array([]), minLineLength=HoughTransform.HOUGH_LINES_MIN_LINE_LENGTH, maxLineGap=HoughTransform.HOUGH_LINES_MAX_LINE_GAP)
 
     hough_overlay = self._display_lines(frame, hough_lines)
-    hough_result_raw = cv2.addWeighted(frame, 0.8, hough_overlay, 1, 0)
-    self._add_knot('Hough Raw Result', hough_result_raw)
+    hough_result = cv2.addWeighted(frame, 0.8, hough_overlay, 1, 0)
+    self._add_knot('Hough Raw Result', hough_result)
 
-    cleaned_lines = self._clean_lines(hough_lines)
-    # print('cleaned_lines', cleaned_lines)
-    lines_overlay = self._display_lines(frame, cleaned_lines)
-    # number is weight of first array then second
-    # last value is gamma value that is added to sum
-    result = cv2.addWeighted(frame, 0.8, lines_overlay, 1, 0)
-    self._add_knot('Final Result', result)
+    filtered_lines = self._filter_hough_lines_on_slope(hough_lines)
+    filtered_lines_overlay = self._display_lines(frame, filtered_lines)
+    filtered_lines_result = cv2.addWeighted(frame, 0.8, filtered_lines_overlay, 1, 0)
+    self._add_knot('Slope Filtered Lines Result', filtered_lines_result)
+
+    line_labels = self._classify_lanes(filtered_lines)
+
+    lanes = numpy.zeros((HoughTransform.NUM_LANES_TO_DETECT, 2))
+
+    lines_with_closeness_filter = numpy.zeros((0, 2))
+
+    for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+      lane_lines = filtered_lines[line_labels == i]
+      num_lines, *remaining = lane_lines.shape
+
+      classified_lines_overlay = self._display_lines(frame, lane_lines, display_overlay=False)
+      classified_lines_result = cv2.addWeighted(frame, 0.8, classified_lines_overlay, 1, 0)
+      self._add_knot('{side} Lane Lines'.format(side='Left' if i == 0 else 'Right'), classified_lines_result)
+
+      if num_lines > 2:
+        lane_lines = self._apply_closeness_filter(lane_lines, 15)
+        lines_with_closeness_filter = numpy.append(lines_with_closeness_filter, lane_lines, axis=0)
+      if num_lines != 0:
+        # averaged_lane = numpy.average(lane_lines[labels == i], axis=0)
+        averaged_lane = numpy.average(lane_lines, axis=0).reshape(1, 2)
+        # add the cluster's average lane to the matrix of lane lines
+        lanes[i] = averaged_lane
+
+    closeness_filter_applied_overlay = self._display_lines(frame, lines_with_closeness_filter)
+    closeness_filter_applied_result = cv2.addWeighted(frame, 0.8, closeness_filter_applied_overlay, 1, 0)
+    self._add_knot('Closeness Filter Result', closeness_filter_applied_result)
+
+    detected_lanes_overlay = self._display_lines(frame, lanes)
+    detected_lanes_result = cv2.addWeighted(frame, 0.8, detected_lanes_overlay, 1, 0)
+    self._add_knot('Detected Lanes Result', detected_lanes_result)
+
+    past_lines = numpy.empty((1, HoughTransform.NUM_LANES_TO_DETECT, 2))
+    for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+      historic_fill = self._historic_fill(column=i)
+
+      if historic_fill is not None:
+        print('diff', abs(lanes[i]-historic_fill))
+
+
+      if not lanes[i].any():
+        lanes[i] = historic_fill
+      else:
+        # print('lanes', lanes)
+        # print('past', self.__past_detected)
+        # print('insert', numpy.insert(self.__past_detected, 0, numpy.array([lanes]), axis=0))
+        lanes[i] = self._get_weighted_historic_average(numpy.insert(self.__past_detected, 0, numpy.array([lanes]), axis=0), column=i)
+        # pass
+      past_lines[0][i] = lanes[i]
+
+    if past_lines[0].all():
+      self.__past_detected = numpy.insert(self.__past_detected, 0, past_lines, axis=0)
+
+    if self.__past_detected.shape[0] > int(round(1.5*self._fps)):
+      self.__past_detected = numpy.delete(self.__past_detected, self.__past_detected.shape[0]-1, axis=0)
+
+    fill_and_average_overlay = self._display_lines(frame, lanes)
+    fill_and_average_result = cv2.addWeighted(frame, 0.8, fill_and_average_overlay, 1, 0)
+    self._add_knot('Fill And Average Lanes Result', fill_and_average_result)
 
     if self._show_pipeline:
       self._display_pipeline()

@@ -32,6 +32,7 @@ class Pipeline(ABC, Process):
   :ivar _debug: a flag indicating whether or not the use is debugging the pipeline. In debug, the pipeline is shown and
                 debug statements are enabled
   :ivar _capture: the OpenCV capture object (CvCapture) that the lane detection algorithm should run on
+  :ivar _fps: the fps of the capture object that the lane detection algorithmn is run on
   :ivar _name: the name of the pipeline (derived from the class name)
   :ivar _screen: the image where the pipeline steps are drawn
   :ivar _image_mask_enabled: indicates whether or not the current instance of the pipeline supports image masks
@@ -95,6 +96,7 @@ class Pipeline(ABC, Process):
     self._name = class_name[class_name.rindex('.') + 1:-2]
     self._screen = numpy.zeros((Pipeline.SCREEN_HEIGHT, Pipeline.SCREEN_WIDTH, Pipeline.NUM_IMAGE_CHANNELS), numpy.uint8)
     self._pipeline = []
+    self._fps = None
 
     self._image_mask_enabled = image_mask_enabled
     self._region_of_interest_mask = []
@@ -149,7 +151,7 @@ class Pipeline(ABC, Process):
     # open input
     self.__open_source(self.__source)
     # get fps of video
-    fps = self._capture.get(cv2.CAP_PROP_FPS)
+    self._fps = self._capture.get(cv2.CAP_PROP_FPS)
     # initialize a flag used to indicate if init_pipeline should be run
     first_frame = True
     # loop run() while the capture is open and we we have not stopped running
@@ -175,8 +177,9 @@ class Pipeline(ABC, Process):
         # only sleep if stop was not called (i.e. we will read the next frame)
         if not self.__stop:
           # 1 second / fps = time to sleep for each frame subtract elapsed time
-          time_to_sleep = max(1 / fps - (time.time() - start_time), 0)
+          time_to_sleep = max(1 / self._fps - (time.time() - start_time), 0)
           time.sleep(time_to_sleep)
+          # time.sleep(0.08)
       # if the pipeline is paused and the while_paused handler is defined, call it
       elif self.__while_paused is not None:
         self.__while_paused()
@@ -186,6 +189,9 @@ class Pipeline(ABC, Process):
       # if a key was pressed, call the handler with the pressed key
       if keypress:
         self.__handle_keypress(keypress, frame)
+
+      # reset the pipeline now that the current iteration has finished
+      self._clear_pipeline()
 
   def __handle_keypress(self, keypress, frame):
     """
@@ -308,9 +314,6 @@ class Pipeline(ABC, Process):
         nonlocal new_region_of_interest
         # add the coordinate to the new image mask
         new_region_of_interest.append((x, y))
-        # sort the image mask so that the click adds to the existing polygon nicely
-        # TODO: Make this better so that points added in between current points do not mess up the shape of the polygon
-        new_region_of_interest = sorted(new_region_of_interest, key=lambda cord: cord[0])
 
     # define keys to keep and discard changes
     CONFIRM_KEY = 'y'
@@ -670,9 +673,6 @@ class Pipeline(ABC, Process):
     else:
       name, image = final_step
       cv2.imshow(self._name, image)
-
-    # reset the pipeline now that it has been displayed
-    self._clear_pipeline()
 
   def _add_mouse_callback_to_pipeline_window(self, callback):
     """
