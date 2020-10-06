@@ -219,7 +219,6 @@ class Pipeline(ABC, Process):
     else:
       self._handle_keypress(keypress, frame)
 
-  @classmethod
   def _handle_keypress(self, keypress, frame):
     """
     @Override - subclass CAN override this function (it is optional)
@@ -693,7 +692,6 @@ class Pipeline(ABC, Process):
 
     cv2.setMouseCallback(self._name, lambda *args: None)
 
-  @classmethod
   @abstractmethod
   def _run(self, frame):
     """
