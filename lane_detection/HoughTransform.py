@@ -9,6 +9,9 @@ from matplotlib import pyplot as plot
 
 from lane_detection.Pipeline import Pipeline
 
+# import warnings
+# warnings.simplefilter('ignore', numpy.RankWarning)
+
 
 class HoughTransform(Pipeline):
   """
@@ -53,6 +56,7 @@ class HoughTransform(Pipeline):
     """
 
     self.__past_detected = numpy.empty((0, HoughTransform.NUM_LANES_TO_DETECT, 2))
+    self.__consecutive_overrides_of_detected_line = numpy.zeros((1, HoughTransform.NUM_LANES_TO_DETECT))
     super().__init__(source, should_start, show_pipeline, debug, True)
 
   def _canny(self, image):
@@ -133,12 +137,17 @@ class HoughTransform(Pipeline):
     for line in dirty_lines:
       # reshape the line into coordinates
       x1, y1, x2, y2 = line.reshape(4)
-      # fit a line to the coordinates and get the returned slope and intercept
-      m, b = numpy.polyfit((x1, x2), (y1, y2), HoughTransform.DEGREE_TO_FIT_TO_HOUGH_LINES)
-      m_magnitude = math.fabs(m)
+
+      # calculate slope of line (will be equal to the result of the polyfit)
+      # prevents RankWarnings from using polyfit on poorly conditioned data (points that are very close - tend to be
+      # horizontally detected lines)
+      m_magnitude = math.fabs((y2-y1)/(x2-x1)) if x2-x1 != 0 else math.inf
+
       # if the slope is in the interval specified by MIN_SLOPE_MAGNITUDE and MAX_SLOPE_MAGNITUDE, add it to the
       # lanes_lines matrix
       if m_magnitude >= HoughTransform.MIN_SLOPE_MAGNITUDE and m_magnitude <= HoughTransform.MAX_SLOPE_MAGNITUDE:
+        # fit a line to the coordinates and get the returned slope and intercept
+        m, b, = numpy.polyfit((x1, x2), (y1, y2), HoughTransform.DEGREE_TO_FIT_TO_HOUGH_LINES)
         lane_lines = numpy.append(lane_lines, numpy.array([[m, b]]), axis=0)
     return lane_lines
 
@@ -154,7 +163,6 @@ class HoughTransform(Pipeline):
 
   def _get_closeness(self, collection):
     num_datapoints, data_dimension = collection.shape
-
     closeness = numpy.empty((num_datapoints, data_dimension), numpy.float64)
     for i in range(num_datapoints):
       squared_distances = numpy.empty((num_datapoints - 1, data_dimension), numpy.float64)
@@ -162,6 +170,7 @@ class HoughTransform(Pipeline):
       for j in range(num_datapoints-1):
         squared_distances[j] = numpy.power(numpy.fabs(collection[i] - other_datapoints[j]), 2)
       closeness[i] = numpy.sum(squared_distances, axis=0)
+      closeness[i] = numpy.sqrt(closeness[i])
     return closeness
 
 
@@ -177,6 +186,7 @@ class HoughTransform(Pipeline):
         current_closeness = sorted_closeness_cur_column[j]
         next_closeness = sorted_closeness_cur_column[j + 1]
         percent_change = (next_closeness - current_closeness) / abs(current_closeness) * 100
+        # percent_change = (next_closeness - sorted_closeness_cur_column[0]) / abs(sorted_closeness_cur_column[0]) * 100
         if percent_change >= percent_change_threshold:
           not_close_index = j + 1
           break
@@ -188,8 +198,10 @@ class HoughTransform(Pipeline):
 
   def _get_weighted_historic_average(self, historic_lines, column):
     def weighting_function(fps, x):
-      k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - math.pow( math.e, (-0.05016553 * fps)))
+      k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - math.pow(math.e, (-0.05016553 * fps)))
       b = 0.020833333*fps+1.5
+      # k=-0.35
+      # b=3
       return numpy.exp(k*x+b)
 
 
@@ -200,6 +212,7 @@ class HoughTransform(Pipeline):
     return numpy.average(historic_lines[:, column, :], axis=0, weights=weighting_function(self._fps, numpy.arange(historic_lines.shape[0])))
 
   def _historic_fill(self, column):
+    # TODO: do historic fill using derivatives so it guesses the next line then takes the weighted historic average
     return self._get_weighted_historic_average(self.__past_detected, column)
 
 
@@ -239,7 +252,6 @@ class HoughTransform(Pipeline):
       #   lines_in_cluseter = lines_in_cluseter[labels == i]
 
 
-
   def _run(self, frame):
     """
     Hough Transform is run on the frame to detect the lane lines
@@ -271,34 +283,42 @@ class HoughTransform(Pipeline):
     # max line gap is the maximum distance in pixels between segmented lines which we will allow to be connected as one
     hough_lines = cv2.HoughLinesP(masked, HoughTransform.HOUGH_LINES_RHO_PIXELS, numpy.deg2rad(HoughTransform.HOUGH_LINES_THETA_DEGREES), HoughTransform.HOUGH_LINES_THRESHOLD, numpy.array([]), minLineLength=HoughTransform.HOUGH_LINES_MIN_LINE_LENGTH, maxLineGap=HoughTransform.HOUGH_LINES_MAX_LINE_GAP)
 
+    # add the result of the hough lines to the pipeline
     hough_overlay = self._display_lines(frame, hough_lines)
     hough_result = cv2.addWeighted(frame, 0.8, hough_overlay, 1, 0)
     self._add_knot('Hough Raw Result', hough_result)
 
+    # filter lines based on slope and add to the pipeline
     filtered_lines = self._filter_hough_lines_on_slope(hough_lines)
     filtered_lines_overlay = self._display_lines(frame, filtered_lines)
     filtered_lines_result = cv2.addWeighted(frame, 0.8, filtered_lines_overlay, 1, 0)
     self._add_knot('Slope Filtered Lines Result', filtered_lines_result)
 
+    # classify each line as either right or left
+    # returns a vector the same length as filtered_lines with each entry corresponding to whether the line is right or left
     line_labels = self._classify_lanes(filtered_lines)
 
     lanes = numpy.zeros((HoughTransform.NUM_LANES_TO_DETECT, 2))
-
     lines_with_closeness_filter = numpy.zeros((0, 2))
 
+    # for both right and left lines, do the following
     for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+      # get the lines corresponding to correct side from filtered_lines
       lane_lines = filtered_lines[line_labels == i]
       num_lines, *remaining = lane_lines.shape
 
+      # add the classified lines to the pipeline
       classified_lines_overlay = self._display_lines(frame, lane_lines, display_overlay=False)
       classified_lines_result = cv2.addWeighted(frame, 0.8, classified_lines_overlay, 1, 0)
       self._add_knot('{side} Lane Lines'.format(side='Left' if i == 0 else 'Right'), classified_lines_result)
 
+      # for more than 2 lines, apply the closeness filter - less than two does not work
       if num_lines > 2:
         lane_lines = self._apply_closeness_filter(lane_lines, 15)
         lines_with_closeness_filter = numpy.append(lines_with_closeness_filter, lane_lines, axis=0)
+      # if any lanes were detected, average the result
       if num_lines != 0:
-        # averaged_lane = numpy.average(lane_lines[labels == i], axis=0)
+        # averaged_lane = numpy.average(lane_lines[labels == i], axis=0) #old line when closeness filter did not exist
         averaged_lane = numpy.average(lane_lines, axis=0).reshape(1, 2)
         # add the cluster's average lane to the matrix of lane lines
         lanes[i] = averaged_lane
@@ -313,20 +333,28 @@ class HoughTransform(Pipeline):
 
     past_lines = numpy.empty((1, HoughTransform.NUM_LANES_TO_DETECT, 2))
     for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+      # get the predicted future line from the past detected lines
       historic_fill = self._historic_fill(column=i)
 
-      if historic_fill is not None:
-        print('diff', abs(lanes[i]-historic_fill))
-
-
+      # if no lane was detected, use the predicted one
       if not lanes[i].any():
         lanes[i] = historic_fill
       else:
-        # print('lanes', lanes)
-        # print('past', self.__past_detected)
-        # print('insert', numpy.insert(self.__past_detected, 0, numpy.array([lanes]), axis=0))
+        # use a weighted average of past and detected line to smooth result
         lanes[i] = self._get_weighted_historic_average(numpy.insert(self.__past_detected, 0, numpy.array([lanes]), axis=0), column=i)
-        # pass
+        # compare the detected lane with what we expect to find
+        # do not override the detected result with the predicted result if that has been done too many times consecutively
+        if self.__consecutive_overrides_of_detected_line[0][i] < 2:
+          if historic_fill is not None:
+            # calculate difference between predicted and detected lines
+            last_and_cur_diff = numpy.fabs(lanes[i] - self.__past_detected[0][i])
+            # check if the difference was too large, and if so use the predicted line
+            if last_and_cur_diff[0] > 0.075 or last_and_cur_diff[1] > 35:
+              self.__consecutive_overrides_of_detected_line[0][i] += 1
+              lanes[i] = historic_fill
+        else:
+          self.__consecutive_overrides_of_detected_line[0][i] = 0
+
       past_lines[0][i] = lanes[i]
 
     if past_lines[0].all():
