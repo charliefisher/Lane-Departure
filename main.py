@@ -3,6 +3,7 @@ from configparser import ConfigParser
 from argparse import ArgumentParser
 
 from lane_detection.HoughTransform import HoughTransform
+from lane_detection.HistogramPeakDetection import HistogramPeakDetection
 
 
 # global variables that dictate how the lane detection lane_detection should be run
@@ -22,16 +23,11 @@ def __main():
   :return: void
   """
 
-  # use camera as input
-  if camera is not None:
+  if camera is not None:   # use camera as input
     source = camera
-
-  # use file as input
-  elif file is not None:
+  elif file is not None:   # use file as input
     source = file
-
-  # use default as input
-  else:
+  else:   # use default as input
     defaultInput = __config['default']['input_source']
     if defaultInput == 'file':
       source = __get_abs_path(__config['default']['file_source'])
@@ -41,10 +37,8 @@ def __main():
     else:
       raise Exception('invalid default input type')
 
-  # start lane_detection
-  # a = HoughTransform(source, True, show_pipeline, debug)
-  # source = 0
-  a = HoughTransform(source, True, True, debug)
+  hough = HoughTransform(source, True, True, debug)
+  histopeak = HistogramPeakDetection(source, True, True, debug)
 
 def __parse_args():
   """
