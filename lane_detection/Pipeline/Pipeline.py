@@ -11,6 +11,8 @@ import time
 import cv2
 import numpy
 
+import Pipeline.RegionOfInterest as RegionOfInterest
+
 
 class Pipeline(ABC, Process):
   """
@@ -84,7 +86,6 @@ class Pipeline(ABC, Process):
 
     # initialize instance variables
     self.__stop = False
-    self.__source = source
 
     self.__show_pipeline_steps = Pipeline.__config['display']['show_pipeline_steps'].lower() in ['true', 'yes', '1']
     self.__cached_pipeline = []
@@ -92,22 +93,57 @@ class Pipeline(ABC, Process):
     self.__paused = False
     self.__while_paused = None
 
+    # private - use property accessor
     class_name = str(self.__class__)
+    self.__source = source
+    self.__frame = None
     self._name = class_name[class_name.rindex('.') + 1:-2]
+    self._fps = None
+    self._image_mask_enabled = image_mask_enabled
+    self._debug = debug
+    self._show_pipeline = show_pipeline or self._debug
+
+    # protected
     self._screen = numpy.zeros((Pipeline.SCREEN_HEIGHT, Pipeline.SCREEN_WIDTH, Pipeline.NUM_IMAGE_CHANNELS), numpy.uint8)
     self._pipeline = []
-    self._fps = None
-
-    self._image_mask_enabled = image_mask_enabled
-    self._region_of_interest_mask = []
-
+    self._region_of_interest = None
     self._capture = None
-    self._show_pipeline = show_pipeline or debug
-    self._debug = debug
 
     # check if the pipeline should start immediately
     if should_start and not self.is_alive():
       self.start()
+
+  @property
+  def source(self):
+    return self.__source
+
+  @property
+  def frame(self):
+    return self.__frame
+
+  @property
+  def name(self):
+    return self._name
+
+  @property
+  def fps(self):
+    return self._fps
+
+  @property
+  def image_mask_enabled(self):
+    return self._image_mask_enabled
+
+  @property
+  def debug(self):
+    return self._debug
+
+  @property
+  def show_pipeline(self):
+    return self._show_pipeline
+
+  @property
+  def region_of_interest(self):
+    return self._region_of_interest.get()
 
   def start(self):
     """
@@ -162,6 +198,7 @@ class Pipeline(ABC, Process):
         start_time = time.time()
         # read a frame of the capture
         return_value, frame = self._capture.read()
+        self.__frame = frame
         # check that the next frame was read successfully
         # i.e. that we have not hit the end of the video or encountered an error
         if return_value:
@@ -188,12 +225,12 @@ class Pipeline(ABC, Process):
       keypress = cv2.waitKey(1) & 0xFF
       # if a key was pressed, call the handler with the pressed key
       if keypress:
-        self.__handle_keypress(keypress, frame)
+        self.__handle_keypress(keypress)
 
       # reset the pipeline now that the current iteration has finished
       self._clear_pipeline()
 
-  def __handle_keypress(self, keypress, frame):
+  def __handle_keypress(self, keypress):
     """
     Handles actions based on a keypress. Works as a delegator to delegate actions based on specific keypress. If the
     keypress maps to a default action, that actions is invoked, otherwise the keypress is passed to the subclass.
@@ -214,12 +251,12 @@ class Pipeline(ABC, Process):
       self.__take_screenshot()
     # m - allow user to edit mask of source image (if image mask is enabled)
     elif keypress == ord('m') and self._image_mask_enabled:
-      self.__modify_region_of_interest(frame)
+      self._region_of_interest.editor(self.frame)
     # other non-default case (let the subclass handle these cases if desired)
     else:
-      self._handle_keypress(keypress, frame)
+      self._handle_keypress(keypress)
 
-  def _handle_keypress(self, keypress, frame):
+  def _handle_keypress(self, keypress):
     """
     @Override - subclass CAN override this function (it is optional)
     Where subclass can add custom keypress events. Cannot override keypress events in Pipeline.py. This inhibits the use
@@ -232,24 +269,6 @@ class Pipeline(ABC, Process):
 
     pass
 
-  def __get_roi_line_index_from_source_settings(self, source_settings):
-    """
-    Get the line number of the region of interest corresponding to the current source in the given source settings
-
-    :param source_settings: the contents of the source_settings file to search (a .ini file were each section is the
-                            source name with an entry entitled roi which is a list of coordinates)
-    :return: void
-    """
-
-    # iterate through all lines until we find the entry corresponding to the current source to get the next line index
-    SOURCE_HEADER = '[{source}]'.format(source=self.__source)
-    roi_line_index = 1
-    for line in source_settings:
-      if line.startswith(SOURCE_HEADER):
-        break
-      roi_line_index += 1
-    # return the region of interest line index if it exists or -1 if it does not
-    return roi_line_index if roi_line_index <= len(source_settings) else -1
 
   def _init_pipeline(self, first_frame):
     """
@@ -263,166 +282,8 @@ class Pipeline(ABC, Process):
 
     # check if image mask is enabled, if so check if a mask was already defined or get the user to define one
     if self._image_mask_enabled:
-      # open file containing defined image masks and read lines
-      with open(Pipeline.SOURCE_SETTINGS_FILE, 'r') as file:
-        source_settings = file.readlines()
-
-      # get the line index of the region of interest of the current source
-      roi_line_index = self.__get_roi_line_index_from_source_settings(source_settings)
-      if roi_line_index != -1:
-        # parse the string of coordinates
-        string_cords = re.findall('\(\d{1,4}, \d{1,4}\)', source_settings[roi_line_index][5:-2])
-        self._region_of_interest_mask = list(map(lambda cord: tuple(map(int, re.sub('\(|\)| ', '', cord).split(','))), string_cords))
-      # otherwise get the user to manually defined a mask
-      else:
-        self.__modify_region_of_interest(first_frame)
-
-
-  def __modify_region_of_interest(self, frame):
-    """
-    Gets user to manually modify the region of interest mask, which is stored in a file. User can either keep or discard
-    their new changes.
-
-    :param frame: the frame of the pipeline to display that assists the user pick a suitable region of interest
-    :raises RuntimeError is raised if this method is called on a pipeline where the image mask is disabled
-    :return: void
-    """
-
-    # raise an Error if the method is called on a pipeline whose image mask is disabled
-    if not self._image_mask_enabled:
-      raise RuntimeError('Cannot modify the image mask on a pipeline that has the image mask disabled')
-
-    # create a list to store the new image mask
-    new_region_of_interest = []
-
-    def handle_region_of_interest_click(event, x, y, flags, param):
-      """
-      Handles clicks on the frame to modify the new image mask.
-
-      :param event: the event type of the click
-      :param x: the x coordinate of the click event
-      :param y: the y coordinate of the click event
-      :param flags: unused - see OpenCV documentation (https://docs.opencv.org/2.4/modules/highgui/doc/user_interface.html#setmousecallback)
-      :param param: unused - see OpenCV documentation (https://docs.opencv.org/2.4/modules/highgui/doc/user_interface.html#setmousecallback)
-      :return: void
-      """
-
-      # only handle left clicks
-      if event == cv2.EVENT_LBUTTONDOWN:
-        # give this method the ability to modify the nonlocal new image mask
-        nonlocal new_region_of_interest
-        # add the coordinate to the new image mask
-        new_region_of_interest.append((x, y))
-
-    # define keys to keep and discard changes
-    CONFIRM_KEY = 'y'
-    DENY_KEY = 'n'
-
-    # add instructions to the screen on selecting image mask
-    text = "Select Region of Interest - '{confrim}' to confirm changes and '{deny}' to disregard changes".format(confrim=CONFIRM_KEY, deny=DENY_KEY)
-    text_bounding_box, text_basline = cv2.getTextSize(text, Pipeline.FONT_FACE, Pipeline.FONT_SCALE, Pipeline.FONT_THICKNESS)
-    text_width, text_height = text_bounding_box
-    position = (5 + Pipeline.FONT_EDGE_OFFSET, 5 + text_height + Pipeline.FONT_EDGE_OFFSET)
-    cv2.putText(frame, text, position, Pipeline.FONT_FACE, Pipeline.FONT_SCALE, Pipeline.FONT_COLOR, Pipeline.FONT_THICKNESS)
-
-    # show the window and add click listener to modify the image mask
-    window_name = '{name} - Select Region of Interest'.format(name=self._name)
-    cv2.imshow(window_name, frame)
-    cv2.setMouseCallback(window_name, handle_region_of_interest_click)
-
-    while True:
-      # define an array of polygons (cv2.fillPoly takes an array of polygons)
-      # we are only drawing a single polygon so polygons will be a list with a single element (which is the image mask)
-      polygons = numpy.empty(shape=(1, len(new_region_of_interest), 2), dtype=numpy.int32)
-
-      # check if there is a coordinate, if there is draw it
-      if len(new_region_of_interest):
-        # add the image mask to the list of polygons
-        polygons[0] = numpy.array(new_region_of_interest)
-        # define a base image to draw the polygon on (simply a black screen
-        poly_base = numpy.zeros_like(frame)
-        # draw the polygons onto the base image
-        cv2.fillPoly(poly_base, polygons, (0, 255, 255))
-        # show the combination of the frame and polygon image
-        cv2.imshow(window_name, cv2.addWeighted(frame, 1, poly_base, 0.5, 0))
-
-      # get a keypress (to see if changes were accepted or rejected)
-      keypress = cv2.waitKey(1) & 0xFF
-      # if changes were accepted
-      if keypress == ord(CONFIRM_KEY):
-        # update the region of interest in the pipeline
-        self._region_of_interest_mask = new_region_of_interest
-
-        # check if a source settings file exists and make it if necessary
-        if not path.exists(Pipeline.SOURCE_SETTINGS_FILE):
-          # create the file using with so that resources are cleaned up after creation
-          with open(Pipeline.SOURCE_SETTINGS_FILE, 'x'):
-            pass
-
-        # read the lines of the source settings file
-        with open(Pipeline.SOURCE_SETTINGS_FILE, 'r') as file:
-          # read the file using with so that resources are cleaned up after
-          source_settings = file.readlines()
-
-        # format the region of interest key
-        roi = 'roi=[{list}]\n'.format(list=', '.join(str(cord) for cord in self._region_of_interest_mask))
-
-        # get the line index of the region of interest of the current source
-        roi_line_index = self.__get_roi_line_index_from_source_settings(source_settings)
-        # if the region of interest mask is defined for the current source, updated it
-        if roi_line_index != -1:
-          # replace the specific line with the new region of interest
-          source_settings[roi_line_index] = roi
-        # otherwise add an entry for the current source to the file with the image mask
-        else:
-          # format the source header
-          SOURCE_HEADER = '[{source}]'.format(source=self.__source)
-          # add entry for current source to file content
-          source_settings.append(SOURCE_HEADER+'\n')
-          # add region of interest (image mask) to file content
-          source_settings.append(roi)
-
-        # write the modified content to the source settings file
-        with open(Pipeline.SOURCE_SETTINGS_FILE, 'w') as file:
-          # write to the file using with so that resources are cleaned up after
-          file.writelines(source_settings)
-        break
-      elif keypress == ord(DENY_KEY):
-        break
-
-    # remove the mouse listener and destroy the window used for selecting the image mask
-    cv2.setMouseCallback(window_name, lambda *args: None)
-    cv2.destroyWindow(window_name)
-
-  def _region_of_interest(self, image):
-    """
-    Applies the region of interest mask to a given image and adds the result to the pipeline. Since the pipeline class
-    handles image masking for subclasses (if it is enabled), this method acts as the interface for subclasses to
-    automatically apply the image mask to a given step in the pipeline. It is the subclasses responsibility to call this
-    method at the appropriate point in the lane detection pipeline.
-
-    :param image: the image to apply the region of interest mask to
-    :raises RuntimeError is raised if this method is called on a pipeline where the image mask is disabled
-    :return: masked: the image provided with the region of interest mask applied
-    """
-
-    # raise an Error if the method is called on a pipeline whose image mask is disabled
-    if not self._image_mask_enabled:
-      raise RuntimeError('Cannot get the region of interest on a pipeline that has the image mask disabled')
-
-    # define the region of interest as an array of arrays (since cv2.fillPoly takes an array of polygons)
-    # we are essentially passing a list with a single entry where that entry is the region of interest mask
-    roi = numpy.array([self._region_of_interest_mask])
-    # mask is the base image to add the region of interest mask to
-    mask = numpy.zeros_like(image)
-    # add the region of interst mask to the base image (all black)
-    cv2.fillPoly(mask, roi, 255)
-    # mask the provided image based on the region of interest
-    masked = cv2.bitwise_and(image, mask)
-    # add the masked image to the pipeline
-    self._add_knot('Region Of Interest Mask', masked)
-    # return the masked image
-    return masked
+      self._region_of_interest = RegionOfInterest.RegionOfInterest(self)
+      self._region_of_interest.load()
 
   def is_paused(self):
     """

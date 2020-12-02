@@ -107,5 +107,4 @@ venv.bak/
 .idea/
 
 # Execution Artificats
-source_settings.ini
 HoughTransform_Pipeline

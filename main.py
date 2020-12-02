@@ -1,7 +1,7 @@
 import os
-from configparser import ConfigParser
 from argparse import ArgumentParser
 
+import settings
 from lane_detection.HoughTransform import HoughTransform
 from lane_detection.HistogramPeakDetection import HistogramPeakDetection
 
@@ -12,9 +12,6 @@ file = None
 show_pipeline = False
 debug = False
 
-# set up config file reader
-__config = ConfigParser(allow_no_value=True)
-__config.read(r'./config.ini')
 
 def __main():
   """
@@ -28,14 +25,15 @@ def __main():
   elif file is not None:   # use file as input
     source = file
   else:   # use default as input
-    defaultInput = __config['default']['input_source']
+    source_settings = settings.load(settings.SettingsCategories.INPUT, settings.InputSettings.SOURCES)
+    defaultInput = source_settings.default.input
     if defaultInput == 'file':
-      source = __get_abs_path(__config['default']['file_source'])
+      source = __get_abs_path(source_settings.default.file_source)
     elif defaultInput == 'camera':
-      camera_type = __config['default']['camera_source']
-      source = int(__config['cameras'][camera_type])
+      camera_type = source_settings.default.camera_source
+      source = settings.cameras[camera_type]
     else:
-      raise Exception('invalid default input type')
+      raise Exception('Invalid default input type')
 
   hough = HoughTransform(source, True, True, debug)
   histopeak = HistogramPeakDetection(source, True, True, debug)
@@ -57,23 +55,20 @@ def __parse_args():
   :return: void
   """
 
-  # add global keyword so we can modify global variables (dangerous, but make sense in this case)
-  global camera, file, show_pipeline, debug
-
   # create argument parser and then parse them
   parser = ArgumentParser()
   parser.add_argument('--show-pipeline', '-p', action='store_true')
   parser.add_argument('--debug', action='store_true')
-  inputType = parser.add_mutually_exclusive_group(required=False)
-  inputType.add_argument('--camera', '-c', nargs=1, choices=['webcam', 'w', 'usb', 'u'], type=str)
-  inputType.add_argument('--file', '-f', nargs=1, type=str)
+  input_type = parser.add_mutually_exclusive_group(required=False)
+  input_type.add_argument('--camera', '-c', nargs=1, choices=['webcam', 'w', 'usb', 'u'], type=str)
+  input_type.add_argument('--file', '-f', nargs=1, type=str)
   args = parser.parse_args()
 
   # format arguments and set global variables
   if args.camera is not None:
-    if args.camera[0] == 'webcam' or args.camera[0] == 'w':
+    if args.camera[0] in ['webcam', 'w']:
       camera = 'webcam'
-    elif args.camera[0] == 'usb' or args.camera[0] == 'u':
+    elif args.camera[0] in ['usb', 'u']:
       camera = 'usb'
     else:
       raise Exception('failed to set camera input')
@@ -101,6 +96,7 @@ def __get_abs_path(path):
     return os.path.abspath(path)
   raise Exception('given file path does not exist')
 
+
 if __name__ == '__main__':
   """
   Parses arguments and calls the main() function
@@ -108,7 +104,5 @@ if __name__ == '__main__':
   Invoked when the script is called from the command line via 'python main.py'
   """
 
-  # parse arguments
-  __parse_args()
-  # call main()
-  __main()
+  __parse_args()  # parse arguments
+  __main()  # call main()

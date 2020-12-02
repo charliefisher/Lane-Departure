@@ -1,6 +1,7 @@
 import numpy
 
-from lane_detection.Pipeline import Pipeline
+from lane_detection.Pipeline.Pipeline import Pipeline
+
 
 
 class HistogramPeakDetection(Pipeline):

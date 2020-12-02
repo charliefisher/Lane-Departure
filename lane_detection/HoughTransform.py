@@ -7,7 +7,8 @@ import math
 import time
 from matplotlib import pyplot as plot
 
-from lane_detection.Pipeline import Pipeline
+from lane_detection.Pipeline.Pipeline import Pipeline
+from lane_detection.Pipeline.general import region_of_interest
 
 # import warnings
 # warnings.simplefilter('ignore', numpy.RankWarning)
@@ -273,7 +274,10 @@ class HoughTransform(Pipeline):
       plot.show()
       time.sleep(7.5)
 
-    masked = self._region_of_interest(canny)
+    masked = region_of_interest(self, canny)
+    # add the masked image to the pipeline
+    self._add_knot('Region Of Interest Mask', masked)
+
     # row is distance accumulator in pixels
     # theta is angle accumulator in radians
     # row then theta as args
