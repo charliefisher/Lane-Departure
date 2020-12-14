@@ -107,4 +107,4 @@ venv.bak/
 .idea/
 
 # Execution Artificats
-HoughTransform_Pipeline
+output

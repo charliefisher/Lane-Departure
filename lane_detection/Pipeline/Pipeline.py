@@ -1,17 +1,17 @@
-from configparser import ConfigParser
-from os import path, mkdir
-from datetime import datetime
-from threading import Thread
-from abc import ABC, abstractmethod
-from multiprocessing import Process
+import os
 import inspect
 import math
-import re
 import time
 import cv2
 import numpy
+from threading import Thread
+from multiprocessing import Process
+from abc import ABC, abstractmethod
+from datetime import datetime
 
-import Pipeline.RegionOfInterest as RegionOfInterest
+import settings
+import Pipeline.RegionOfInterest as ROI
+
 
 
 class Pipeline(ABC, Process):
@@ -23,10 +23,16 @@ class Pipeline(ABC, Process):
   manually apply a mask to an image.
 
   Use:
-    start() to open video feed and calls run()
+    start() to open video feed and calls _run()
     _run() is where the lane detection algorithm is implemented (MUST be overriden by subclass)
     stop() to close video feed and windows and stop calling run()
 
+    #TODO: update this list
+    take_screenshot()
+    _add_knot()
+
+
+  # TODO: update this list
   :ivar _pipeline: a list of frames showing the different steps of the pipeline. It should only ever store the pipeline
                 for a single iteration at a given instant (i.e. its length should never exceed the number of steps in
                 the pipeline) - not guaranteed to be filled
@@ -50,27 +56,15 @@ class Pipeline(ABC, Process):
   :ivar __while_paused: stores the function to be executed while the pipeline is paused
   """
 
-  SOURCE_SETTINGS_FILE = './source_settings.ini'
-
-  # set up config file reader
-  __config = ConfigParser(allow_no_value=True)
-  __config.read(path.join(path.dirname(__file__), r'./Pipeline.config'))
-
-  # set up static variables from config file
-  SCREEN_WIDTH = int(__config['window']['width'])
-  SCREEN_HEIGHT = int(__config['window']['height'])
-
-  MINIMUM_FINAL_IMAGE_RATIO = float(__config['display']['minimum_final_image_ratio'])
-
-  FONT_FACE = vars(cv2)[__config['font']['font_face']]
-  FONT_COLOR = tuple(map(int, re.sub('\(|\)| ', '', __config['font']['color']).split(',')))
-  FONT_THICKNESS = int(__config['font']['thickness'])
-  FONT_SCALE = float(__config['font']['scale'])
-  FONT_EDGE_OFFSET = int(__config['font']['edge_offset'])
+  settings = settings.load(settings.SettingsCategories.PIPELINES, settings.PipelineSettings.GENERAL)
 
   NUM_IMAGE_CHANNELS = 3
 
-  def __init__(self, source, should_start, show_pipeline, debug, image_mask_enabled):
+  def __init__(self, source: str, *,
+               should_start: bool = True,
+               show_pipeline: bool = True,
+               image_mask_enabled: bool = True,
+               debug: bool = False):
     """
     Declares instance variables (_show_pipeline, _debug, _capture) and starts the pipeline according to should_start
 
@@ -85,66 +79,89 @@ class Pipeline(ABC, Process):
     super().__init__()
 
     # initialize instance variables
-    self.__stop = False
-
-    self.__show_pipeline_steps = Pipeline.__config['display']['show_pipeline_steps'].lower() in ['true', 'yes', '1']
-    self.__cached_pipeline = []
-
-    self.__paused = False
-    self.__while_paused = None
 
     # private - use property accessor
-    class_name = str(self.__class__)
-    self.__source = source
-    self.__frame = None
-    self._name = class_name[class_name.rindex('.') + 1:-2]
+    self._source = source
+    self._frame = None
+    self._name = self.__class__.__name__
     self._fps = None
     self._image_mask_enabled = image_mask_enabled
     self._debug = debug
     self._show_pipeline = show_pipeline or self._debug
+    self._show_pipeline_steps = Pipeline.settings.display.show_pipeline_steps
+    self._knots = []
 
+    screen_dimensions = (Pipeline.settings.window.height, Pipeline.settings.window.width, Pipeline.NUM_IMAGE_CHANNELS)
     # protected
-    self._screen = numpy.zeros((Pipeline.SCREEN_HEIGHT, Pipeline.SCREEN_WIDTH, Pipeline.NUM_IMAGE_CHANNELS), numpy.uint8)
-    self._pipeline = []
+    self._screen = numpy.zeros(screen_dimensions, numpy.uint8)
     self._region_of_interest = None
     self._capture = None
+
+    # private - only accessible by class
+    self.__current_knots = []  # maybe not be filled (most likely, will be partially filled)
+    self.__stop = False
+    self.__paused = False
+    self.__while_paused = None
 
     # check if the pipeline should start immediately
     if should_start and not self.is_alive():
       self.start()
 
+##### Property Accessors for Read-Only Instance Variables #####
   @property
-  def source(self):
-    return self.__source
+  def source(self) -> str:
+    return self._source
 
   @property
-  def frame(self):
-    return self.__frame
+  def frame(self) -> numpy.array:
+    return self._frame
 
   @property
-  def name(self):
+  def name(self) -> str:
     return self._name
 
   @property
-  def fps(self):
+  def fps(self) -> int:
     return self._fps
 
   @property
-  def image_mask_enabled(self):
+  def image_mask_enabled(self) -> bool:
     return self._image_mask_enabled
 
   @property
-  def debug(self):
-    return self._debug
+  def knots(self) -> list[numpy.array]:
+    return self.__current_knots
 
   @property
-  def show_pipeline(self):
-    return self._show_pipeline
-
-  @property
-  def region_of_interest(self):
+  def region_of_interest(self) -> list[tuple[int, int]]:
     return self._region_of_interest.get()
 
+##### Property Accessors and Mutators for Instance Variables #####
+  @property
+  def show_pipeline(self) -> bool:
+    return self._show_pipeline
+
+  @show_pipeline.setter
+  def show_pipeline(self, value: bool) -> None:
+    self._show_pipeline = value
+
+  @property
+  def show_pipeline_steps(self) -> bool:
+    return self._show_pipeline_steps
+
+  @show_pipeline_steps.setter
+  def show_pipeline(self, value: bool) -> None:
+    self._show_pipeline_steps = value
+
+  @property
+  def debug(self) -> bool:
+    return self._debug
+
+  @debug.setter
+  def debug(self, value: bool) -> None:
+    self._debug = value
+
+##### Method Definitions #####
   def start(self):
     """
     Starts running the process which then subsequently opens the video and runs the pipeline
@@ -152,24 +169,23 @@ class Pipeline(ABC, Process):
     :return: void
     """
 
-    # call Process.start() to start the Process execution
-    super().start()
+    super().start()  # call Process.start() to start the Process execution
 
-  def __open_source(self, input):
+  def __open_source(self, src: str) -> None:
     """
     Opens a cv2.capture object
 
     This method is susceptible to raise any errors caused by cv2.VideoCapture(src)
 
     :param input: the filename or device id to be opened
-    :raises: Exception is raised if this method is called when _capture is already open
+    :raises: RuntimeError is raised if this method is called when _capture is already open
     :return: void
     """
 
     # check that capture is not already open
     if not self._capture:
-      # open capture from provided input
-      self._capture = cv2.VideoCapture(input)
+      self._capture = cv2.VideoCapture(src)  # open capture from provided input
+      self._fps = self._capture.get(cv2.CAP_PROP_FPS)  # get fps of video
     else:
       # throw error if capture is already open
       raise RuntimeError('Cannot open {input} as a capture is already open'.format(input=input))
@@ -182,53 +198,48 @@ class Pipeline(ABC, Process):
 
     # check if function was called by Process superclass and raise an error if it was not
     if inspect.stack()[1].function != '_bootstrap':
-      raise RuntimeError('run method of Pipeline.py can only be invoked by Process superclass')
+      raise RuntimeError('Pipeline::run can only be invoked by multiprocessing::Process')
 
-    # open input
-    self.__open_source(self.__source)
-    # get fps of video
-    self._fps = self._capture.get(cv2.CAP_PROP_FPS)
-    # initialize a flag used to indicate if init_pipeline should be run
-    first_frame = True
+    self.__open_source(self._source)  # open input
+    first_frame = True  # initialize a flag used to indicate if init_pipeline should be run
+
     # loop run() while the capture is open and we we have not stopped running
     while not self.__stop and self._capture.isOpened():
       # if the pipeline is not paused, read a frame from the capture and call the pipeline
-      if not self.__paused:
-        # store start time of loop
-        start_time = time.time()
-        # read a frame of the capture
-        return_value, frame = self._capture.read()
-        self.__frame = frame
+      if not self.is_paused():
+        start_time = time.time()  # store start time of loop
+        return_value, frame = self._capture.read()  # read a frame of the capture
+
         # check that the next frame was read successfully
         # i.e. that we have not hit the end of the video or encountered an error
         if return_value:
+          self._frame = frame
           # if it is the first frame of the pipeline, run init_pipeline, then set flag to false
           if first_frame:
-            self._init_pipeline(frame)
+            self._init_pipeline(self._frame)
             first_frame = False
-          # run the pipeline
-          self._run(frame)
+          self._run(self._frame)  # run the pipeline
+          if self._show_pipeline:  # display the pipeline
+            self.__display_pipeline()
         else:
-          # stop the pipeline if we hit the end of the video or encountered an error
-          self.stop()
+          self.stop()  # stop the pipeline if we hit the end of the video or encountered an error
+
         # only sleep if stop was not called (i.e. we will read the next frame)
         if not self.__stop:
           # 1 second / fps = time to sleep for each frame subtract elapsed time
           time_to_sleep = max(1 / self._fps - (time.time() - start_time), 0)
           time.sleep(time_to_sleep)
-          # time.sleep(0.08)
-      # if the pipeline is paused and the while_paused handler is defined, call it
+      # if the pipeline is paused and the whilepaused handler is defined, call it
       elif self.__while_paused is not None:
-        self.__while_paused()
+        self.__while_paused()  # NOTE: the pipeline will block until the function returns
 
-      # get the keypress
-      keypress = cv2.waitKey(1) & 0xFF
+      keypress = cv2.waitKey(1) & 0xFF  # get the keypress
       # if a key was pressed, call the handler with the pressed key
       if keypress:
         self.__handle_keypress(keypress)
 
       # reset the pipeline now that the current iteration has finished
-      self._clear_pipeline()
+      self.__clear_pipeline()
 
   def __handle_keypress(self, keypress):
     """
@@ -245,10 +256,10 @@ class Pipeline(ABC, Process):
       self.stop()
     # p - toggle displaying the pipeline steps
     elif keypress == ord('p'):
-      self.__show_pipeline_steps = not self.__show_pipeline_steps
+      self._show_pipeline_steps = not self._show_pipeline_steps
     # s - take a screenshot of the pipeline (saves each knot in the pipeline)
     elif keypress == ord('s'):
-      self.__take_screenshot()
+      self.take_screenshot()
     # m - allow user to edit mask of source image (if image mask is enabled)
     elif keypress == ord('m') and self._image_mask_enabled:
       self._region_of_interest.editor(self.frame)
@@ -282,7 +293,7 @@ class Pipeline(ABC, Process):
 
     # check if image mask is enabled, if so check if a mask was already defined or get the user to define one
     if self._image_mask_enabled:
-      self._region_of_interest = RegionOfInterest.RegionOfInterest(self)
+      self._region_of_interest = ROI.RegionOfInterest(self)
       self._region_of_interest.load()
 
   def is_paused(self):
@@ -294,20 +305,20 @@ class Pipeline(ABC, Process):
 
     return self.__paused
 
-  def _pause(self, while_paused=None):
+  def pause(self, whilepaused=None):
     """
-    Pauses the pipeline and will call the while_paused handler until the pipeline is unpaused
+    Pauses the pipeline and will call the whilepaused handler until the pipeline is unpaused
 
     :raises: RuntimeError is raised if this method is called when the pipeline is already paused
     :return: void
     """
 
-    if self.__paused:
+    if self.is_paused():
       raise RuntimeError('Cannot pause a pipeline that is already paused')
     self.__paused = True
-    self.__while_paused = while_paused
+    self.__while_paused = whilepaused
 
-  def _unpause(self):
+  def unpause(self):
     """
     Unpauses the pipeline
 
@@ -315,7 +326,7 @@ class Pipeline(ABC, Process):
     :return: void
     """
 
-    if not self.__paused:
+    if not self.is_paused():
       raise RuntimeError('Cannot unpause a pipeline that is not currently paused')
     self.__paused = False
     self.__while_paused = None
@@ -327,54 +338,37 @@ class Pipeline(ABC, Process):
     :return: void
     """
 
-    # close the capture
-    self._capture.release()
-    # remove all windows
-    cv2.destroyAllWindows()
-    # set flag to stop process execution
-    self.__stop = True
-    # do not have to worry about joining the thread on stop since it is not daemonic and non daemonic threads are joinged automatically
+    self._capture.release()  # close the capture
+    cv2.destroyAllWindows()  # remove all windows
+    self.__stop = True  # set flag to stop process execution
 
-
-  def __take_screenshot(self, extension='jpg'):
+  def take_screenshot(self, extension='jpg'):
     """
     Takes a screenshot of the pipeline (saves each knot in the pipeline)
 
     :param extension (optional) (default=jpg): the file extension that images should be saved as
     :return: void
     """
-    # get the directory belonging to this pipeline instance
-    pipeline_directory = '{current_directory}/{pipeline_name}_Pipeline'.format(current_directory=path.dirname(__file__), pipeline_name=self._name)
-    # make the respective directory if necessary
-    if not path.exists(pipeline_directory):
-      mkdir(pipeline_directory)
-    # make a directory with the current timestamp to contain the screenshots
-    current_time_string = datetime.now().strftime('%Y-%m-%d %H%M.%S')
-    screenshot_directory = path.join(pipeline_directory, current_time_string)
-    mkdir(screenshot_directory)
 
-    # declare a function that calls cv2.imwrite so that it can be threaded
-    def write_file_func(file_name, image):
-      """
-      Wraps cv2.imwrite so that it can be threaded. Also handles some formatting of the image name.
+    def do_screenshot() -> None:
+      output_dir = '{base_output_dir}/{pipeline_name}/{timestamp}' \
+        .format(base_output_dir='output',
+                pipeline_name=self._name,
+                timestamp=datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
-      :param file_name: the name that the image should be saved as
-      :param image: the image to be saved
-      :return: void
-      """
+      os.makedirs(output_dir, exist_ok=True)
 
-      cv2.imwrite(path.join(screenshot_directory, file_name), image)
+      # iterate through each step of the pipeline and save the corresponding image (which is done in a new thread)
+      i = 1
+      for name, image in self._knots:
+        # format the file name
+        file_name = '{index} - {name}.{ext}'.format(index=i, name=name, ext=extension)
+        cv2.imwrite(os.path.join(output_dir, file_name), image)
+        i += 1
 
-    # iterate through each step of the pipeline and save the corresponding image (which is done in a new thread)
-    i = 1
-    for name, image in self.__cached_pipeline:
-      # format the file name
-      file_name = '{index}  -  {name}'.format(index=i, name=name) + '.' + extension
-      # create a thread and start it
-      # intentionally do not join this thread as we want the image writing to happen in the background
-      Thread(target=write_file_func, args=(file_name, image)).start()
-
-      i += 1
+    screenshot = Thread(target=do_screenshot)
+    screenshot.start()
+    # do not join the thread here since we want the screenshot to occur in the background
 
   def _add_knot(self, name, image):
     """
@@ -384,20 +378,20 @@ class Pipeline(ABC, Process):
     :param image: the image to be added to the end of the pipeline
     :return: void
     """
-    self._pipeline.append((name, image))
+    self.__current_knots.append((name, image))
 
-  def _clear_pipeline(self):
+  def __clear_pipeline(self):
     """
     Empties the stored steps of the lane detection pipeline
 
     :return: void
     """
-    self.__cached_pipeline = self._pipeline
-    self._pipeline = []
+    self._knots = self.__current_knots
+    self.__current_knots = []
 
-  def _display_pipeline(self):
+  def __display_pipeline(self):
     """
-    Displays the pipeline to the user. Depending on the state of __show_pipeline_steps, the steps of the pipeline may
+    Displays the pipeline to the user. Depending on the state of _show_pipeline_steps, the steps of the pipeline may
     or may not be visible.
 
     :return: void
@@ -425,24 +419,24 @@ class Pipeline(ABC, Process):
 
       # add the title of the knot to the image
       title = '{index}  -  {name}'.format(index=index, name=name)
-      title_bounding_box, title_basline = cv2.getTextSize(title, Pipeline.FONT_FACE, Pipeline.FONT_SCALE, Pipeline.FONT_THICKNESS)
+      title_bounding_box, title_basline = cv2.getTextSize(title, Pipeline.settings.font.face, Pipeline.settings.font.scale, Pipeline.settings.font.thickness)
       text_width, text_height = title_bounding_box
-      position = (start_x + Pipeline.FONT_EDGE_OFFSET, start_y + text_height + Pipeline.FONT_EDGE_OFFSET)
-      cv2.putText(self._screen, title, position, Pipeline.FONT_FACE, Pipeline.FONT_SCALE, Pipeline.FONT_COLOR, Pipeline.FONT_THICKNESS)
+      position = (start_x + Pipeline.settings.font.edge_offset, start_y + text_height + Pipeline.settings.font.edge_offset)
+      cv2.putText(self._screen, title, position, Pipeline.settings.font.face, Pipeline.settings.font.scale, Pipeline.settings.font.color, Pipeline.settings.font.thickness)
 
     # split the pipeline into the final and intermediate steps
-    pipeline_steps = self._pipeline[:-1]
-    final_step = self._pipeline[-1]
+    pipeline_steps = self.__current_knots[:-1]
+    final_step = self.__current_knots[-1]
     num_pipeline_steps = len(pipeline_steps)
 
     # display the steps of the pipeline only if that option is selected
-    if self.__show_pipeline_steps and num_pipeline_steps > 0:
+    if self._show_pipeline_steps and num_pipeline_steps > 0:
       # initialize the aspect ratio (gets set later when the pipeline is checked for consistent aspect ratios)
       aspect_ratio = None
       # check that all steps of the pipeline have the same aspect ratio (if not raise and error)
       # simultaneously, check if any images are single channel and convert them to the correct number of channels
-      for i in range(len(self._pipeline)):
-        name, image = self._pipeline[i]
+      for i in range(len(self.__current_knots)):
+        name, image = self.__current_knots[i]
         # get the dimensions of the image
         # note that if the image is single channel, then num_channels will be undefined -> set it to default value after
         height, width, *num_channels = image.shape
@@ -468,8 +462,8 @@ class Pipeline(ABC, Process):
       # return the next lowest square greater than num
       next_square = lambda num: int(round(math.pow(math.ceil(math.sqrt(abs(num))), 2)))
 
-      # the actual ratio of the final image (will be grater than or equal to Pipeline.MINIMUM_FINAL_IMAGE_RATIO)
-      RESULT_IMAGE_RATIO = Pipeline.MINIMUM_FINAL_IMAGE_RATIO
+      # the actual ratio of the final image (will be grater than or equal to Pipeline.settings.display.minimum_final_image_ratio)
+      RESULT_IMAGE_RATIO = Pipeline.settings.display.minimum_final_image_ratio
       # initialize variables concerned with the size of pipeline step bins
       # (will get set later when calculating RESULT_IMAGE_RATIO)
       num_bins_top_left = None
@@ -505,12 +499,13 @@ class Pipeline(ABC, Process):
         RESULT_IMAGE_RATIO = 1 - horizontal_bins_dimension / math.ceil(vertical_bins_dimension)
         # due to floating point precision errors, sometimes repeating decimals get rounded in an undesirable manner
         # essentially, the program has successfully found the desired ratio, but rounds it causing the program to fail
-        # if this occurs, raise an error and instruct the user to fix the rounding error and update the value in Pipeline.config
+        # if this occurs, raise an error and instruct the user to fix the rounding error and update the value in
+        # Pipeline settings
         if prev == RESULT_IMAGE_RATIO:
           raise FloatingPointError('Failed trying to find best ratio for result image. This was caused by a floating point decimal error on repeating digits. Update the pipeline.config file and try again. The recomended ratio is {new_ratio} (simply fix the repeating decimals)'.format(new_ratio=RESULT_IMAGE_RATIO))
 
       # calculate the dimensions of a pipeline step
-      container_width = int(round(Pipeline.SCREEN_WIDTH * (1 - RESULT_IMAGE_RATIO)))
+      container_width = int(round(Pipeline.settings.window.width * (1 - RESULT_IMAGE_RATIO)))
       step_width = container_width // horizontal_bins_dimension
       step_height = int(round(step_width * aspect_ratio))
 
@@ -525,33 +520,15 @@ class Pipeline(ABC, Process):
         i += 1
 
       # add the final step to the screen in the bottom left quarter
-      output_width = int(round(Pipeline.SCREEN_WIDTH * RESULT_IMAGE_RATIO))
-      output_height = int(round(Pipeline.SCREEN_HEIGHT * RESULT_IMAGE_RATIO))
-      add_knot_to_screen(len(self._pipeline), knot=final_step, new_dimension=(output_width, output_height), position=(Pipeline.SCREEN_HEIGHT-output_height, Pipeline.SCREEN_WIDTH-output_width))
+      output_width = int(round(Pipeline.settings.window.width * RESULT_IMAGE_RATIO))
+      output_height = int(round(Pipeline.settings.window.height * RESULT_IMAGE_RATIO))
+      add_knot_to_screen(len(self.__current_knots), knot=final_step, new_dimension=(output_width, output_height), position=(Pipeline.settings.window.height-output_height, Pipeline.settings.window.width-output_width))
 
       cv2.imshow(self._name, self._screen)
     else:
       name, image = final_step
       cv2.imshow(self._name, image)
 
-  def _add_mouse_callback_to_pipeline_window(self, callback):
-    """
-    Adds the specified mouse callback to the pipeline window
-
-    :param callback: the callback to be added to the pipeline window
-    :return: void
-    """
-
-    cv2.setMouseCallback(self._name, callback)
-
-  def _remove_mouse_callback_from_pipeline_window(self):
-    """
-    Removes the mouse callback from the pipeline window
-
-    :return: void
-    """
-
-    cv2.setMouseCallback(self._name, lambda *args: None)
 
   @abstractmethod
   def _run(self, frame):

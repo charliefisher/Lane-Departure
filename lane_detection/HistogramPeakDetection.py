@@ -11,18 +11,21 @@ class HistogramPeakDetection(Pipeline):
 
   DEGREE_TO_FIT_TO_LINES = 5
 
-  def __init__(self, source, should_start, show_pipeline, debug):
+  def __init__(self, source: str, *,
+               should_start: bool = True,
+               show_pipeline: bool = True,
+               debug: bool = False):
     """
     Calls superclass __init__ (see Pipeline.__init__ for more details)
 
     :param source: the filename or device that the pipeline should be run on
     :param should_start: a flag indicating whether or not the pipeline should start as soon as it is instantiated
-    :param show_pipeline: a flag indicating whether or not each step in the pipeline should be shown
     :param debug: a flag indicating whether or not the use is debugging the pipeline. In debug, the pipeline is
                   shown and debug statements are enabled
     """
 
-    super().__init__(source, should_start, show_pipeline, debug, True)
+    super().__init__(source, image_mask_enabled=True, should_start=should_start,
+                     show_pipeline=show_pipeline, debug=debug)
 
   def _run(self, frame):
     """
@@ -38,6 +41,3 @@ class HistogramPeakDetection(Pipeline):
 
     frame = numpy.copy(frame)
     self._add_knot('Raw', frame)
-
-    if self._show_pipeline:
-      self._display_pipeline()

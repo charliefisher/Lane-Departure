@@ -22,6 +22,7 @@ class InputSettings(Enum):
 
 
 class PipelineSettings(Enum):
+  GENERAL = 'general'
   HOUGH_TRANSFORM = 'hough_transform'
   HISTOGRAM_PEAK_DETECTION = 'histogram_peak_detection'
 
@@ -133,4 +134,4 @@ def __print_formatter(obj, indent=2, width=80) -> str:
 
     return result
 
-  return print_formatter_internal(obj, 0).replace('\\', '\\\\')
+  return print_formatter_internal().replace('\\', '\\\\')

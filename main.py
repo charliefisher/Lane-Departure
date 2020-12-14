@@ -35,8 +35,8 @@ def __main():
     else:
       raise Exception('Invalid default input type')
 
-  hough = HoughTransform(source, True, True, debug)
-  histopeak = HistogramPeakDetection(source, True, True, debug)
+  hough = HoughTransform(source)
+  histopeak = HistogramPeakDetection(source)
 
 def __parse_args():
   """

@@ -76,14 +76,16 @@ class RegionOfInterest:
       DENY_KEY = 'n'
 
       # add instructions to the screen on selecting image mask
-      text = "Select Region of Interest - '{confrim}' to confirm changes and '{deny}' to disregard changes".format(
-        confrim=CONFIRM_KEY, deny=DENY_KEY)
-      text_bounding_box, text_baseline = cv2.getTextSize(text, Pipeline.Pipeline.FONT_FACE, Pipeline.Pipeline.FONT_SCALE,
-                                                        Pipeline.Pipeline.FONT_THICKNESS)
+      text = "Select Region of Interest - '{confirm}' to confirm changes and '{deny}' to disregard changes"\
+             .format(confirm=CONFIRM_KEY, deny=DENY_KEY)
+      text_bounding_box, text_baseline = cv2.getTextSize(text, Pipeline.Pipeline.settings.font.face,
+                                                         Pipeline.Pipeline.settings.font.scale,
+                                                         Pipeline.Pipeline.settings.font.thickness)
       text_width, text_height = text_bounding_box
-      position = (5 + Pipeline.Pipeline.FONT_EDGE_OFFSET, 5 + text_height + Pipeline.Pipeline.FONT_EDGE_OFFSET)
-      cv2.putText(frame, text, position, Pipeline.Pipeline.FONT_FACE, Pipeline.Pipeline.FONT_SCALE, Pipeline.Pipeline.FONT_COLOR,
-                  Pipeline.Pipeline.FONT_THICKNESS)
+      position = (5 + Pipeline.Pipeline.settings.font.edge_offset,
+                  5 + text_height + Pipeline.Pipeline.settings.font.edge_offset)
+      cv2.putText(frame, text, position, Pipeline.Pipeline.settings.font.face, Pipeline.Pipeline.settings.font.scale,
+                  Pipeline.Pipeline.settings.font.color, Pipeline.Pipeline.settings.font.thickness)
 
       # show the window and add click listener to modify the image mask
       window_name = '{name} - Select Region of Interest'.format(name=self._pipeline.name)

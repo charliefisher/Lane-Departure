@@ -9,6 +9,7 @@ from matplotlib import pyplot as plot
 
 from lane_detection.Pipeline.Pipeline import Pipeline
 from lane_detection.Pipeline.general import region_of_interest
+import settings
 
 # import warnings
 # warnings.simplefilter('ignore', numpy.RankWarning)
@@ -20,32 +21,12 @@ class HoughTransform(Pipeline):
   """
 
   DEGREE_TO_FIT_TO_HOUGH_LINES = 1
+  settings = settings.load(settings.SettingsCategories.PIPELINES, settings.PipelineSettings.HOUGH_TRANSFORM)
 
-  # set up config file reader
-  __config = ConfigParser(allow_no_value=True)
-  __config.read(path.join(path.dirname(__file__), r'./HoughTransform.config'))
-  # set up static variables from config file
-  MIN_SLOPE_MAGNITUDE = float(__config['lanes']['min_slope_magnitude'])
-  MAX_SLOPE_MAGNITUDE = float(__config['lanes']['max_slope_magnitude'])
-  NUM_LANES_TO_DETECT = int(__config['lanes']['num_to_detect'])
-
-  GAUSSIAN_BLUR_KERNEL_SIZE = tuple(map(int, re.sub('\(|\)| ', '', __config['gaussian blur']['kernel_size']).split(',')))
-  GAUSSIAN_BLUR_DEVIATION = float(__config['gaussian blur']['deviation'])
-
-  CANNY_LOWER_THRESHOLD = int(__config['canny']['lower_threshold'])
-  CANNY_UPPER_THRESHOLD = int(__config['canny']['upper_threshold'])
-
-  HOUGH_LINES_RHO_PIXELS = int(__config['hough lines']['rho'])
-  HOUGH_LINES_THETA_DEGREES = float(__config['hough lines']['theta'])
-  HOUGH_LINES_THRESHOLD = int(__config['hough lines']['threshold'])
-  HOUGH_LINES_MIN_LINE_LENGTH = int(__config['hough lines']['min_line_length'])
-  HOUGH_LINES_MAX_LINE_GAP = int(__config['hough lines']['max_line_gap'])
-
-  K_MEANS_MAX_ITER = int(__config['k means']['max_iter'])
-  K_MEANS_EPSILON = float(__config['k means']['epsilon'])
-  K_MEANS_NUM_ATTEMPTS = int(__config['k means']['num_attempts'])
-
-  def __init__(self, source, should_start, show_pipeline, debug):
+  def __init__(self, source: str, *,
+               should_start: bool = True,
+               show_pipeline: bool = True,
+               debug: bool = False):
     """
     Calls superclass __init__ (see Pipeline.__init__ for more details)
 
@@ -56,9 +37,10 @@ class HoughTransform(Pipeline):
                   shown and debug statements are enabled
     """
 
-    self.__past_detected = numpy.empty((0, HoughTransform.NUM_LANES_TO_DETECT, 2))
-    self.__consecutive_overrides_of_detected_line = numpy.zeros((1, HoughTransform.NUM_LANES_TO_DETECT))
-    super().__init__(source, should_start, show_pipeline, debug, True)
+    self.__past_detected = numpy.empty((0, HoughTransform.settings.lanes.num_to_detect, 2))
+    self.__consecutive_overrides_of_detected_line = numpy.zeros((1, HoughTransform.settings.lanes.num_to_detect))
+    super().__init__(source, image_mask_enabled=True, should_start=should_start,
+                     show_pipeline=show_pipeline, debug=debug)
 
   def _canny(self, image):
     """
@@ -77,7 +59,7 @@ class HoughTransform(Pipeline):
     # apply gaussian blur, reducing noise in grayscale image, reducing the effect of undesired lines
     # this is somehwhat redundant as canny already applies a gaussian blur but gives more controlling allowing for a
     # larger kernel to be used (if desired)
-    blurred = cv2.GaussianBlur(grayscale, HoughTransform.GAUSSIAN_BLUR_KERNEL_SIZE, HoughTransform.GAUSSIAN_BLUR_DEVIATION)
+    blurred = cv2.GaussianBlur(grayscale, HoughTransform.settings.gaussian_blur.kernel_size, HoughTransform.settings.gaussian_blur.deviation)
     self._add_knot('Gaussian Blur', blurred)
 
     # 4 , -600
@@ -91,8 +73,8 @@ class HoughTransform(Pipeline):
     # above threshold counts as leading edge
     # below threshold is rejected
     # between thresholds is accepted if it is touching a leading edge
-    # canny = cv2.Canny(blurred, HoughTransform.CANNY_LOWER_THRESHOLD, HoughTransform.CANNY_UPPER_THRESHOLD)
-    canny = cv2.Canny(modified, HoughTransform.CANNY_LOWER_THRESHOLD, HoughTransform.CANNY_UPPER_THRESHOLD)
+    # canny = cv2.Canny(blurred, HoughTransform.settings.canny.lower_threshold, HoughTransform.settings.canny.upper_threshold)
+    canny = cv2.Canny(modified, HoughTransform.settings.canny.lower_threshold, HoughTransform.settings.canny.upper_threshold)
     self._add_knot('Canny', canny)
     return canny
 
@@ -144,9 +126,9 @@ class HoughTransform(Pipeline):
       # horizontally detected lines)
       m_magnitude = math.fabs((y2-y1)/(x2-x1)) if x2-x1 != 0 else math.inf
 
-      # if the slope is in the interval specified by MIN_SLOPE_MAGNITUDE and MAX_SLOPE_MAGNITUDE, add it to the
+      # if the slope is in the interval specified by settings.lanes.min_slope_magnitude and settings.lanes.max_slope_magnitude, add it to the
       # lanes_lines matrix
-      if m_magnitude >= HoughTransform.MIN_SLOPE_MAGNITUDE and m_magnitude <= HoughTransform.MAX_SLOPE_MAGNITUDE:
+      if m_magnitude >= HoughTransform.settings.lanes.min_slope_magnitude and m_magnitude <= HoughTransform.settings.lanes.max_slope_magnitude:
         # fit a line to the coordinates and get the returned slope and intercept
         m, b, = numpy.polyfit((x1, x2), (y1, y2), HoughTransform.DEGREE_TO_FIT_TO_HOUGH_LINES)
         lane_lines = numpy.append(lane_lines, numpy.array([[m, b]]), axis=0)
@@ -224,19 +206,19 @@ class HoughTransform(Pipeline):
     # lane_lines = numpy.float32(lane_lines)
     #
     # type = 0
-    # if HoughTransform.K_MEANS_EPSILON > 0:
+    # if HoughTransform.settings.k_means.epsilon > 0:
     #   type += cv2.TERM_CRITERIA_EPS
-    # if HoughTransform.K_MEANS_MAX_ITER > 0:
+    # if HoughTransform.settings.k_means.max_iter > 0:
     #   type += cv2.TERM_CRITERIA_MAX_ITER
     # # define criteria for k means
-    # criteria = (type, HoughTransform.K_MEANS_MAX_ITER, HoughTransform.K_MEANS_EPSILON)
+    # criteria = (type, HoughTransform.settings.k_means.max_iter, HoughTransform.settings.k_means.epsilon)
     # # criteria = (cv2.TERM_CRITERIA_EPS, 0, 0.5)
     # # run k means
-    # compactness, labels, centers = cv2.kmeans(lane_lines, HoughTransform.NUM_LANES_TO_DETECT, None, criteria, HoughTransform.K_MEANS_NUM_ATTEMPTS, cv2.KMEANS_RANDOM_CENTERS)
+    # compactness, labels, centers = cv2.kmeans(lane_lines, HoughTransform.settings.lanes.num_to_detect, None, criteria, HoughTransform.settings.k_means.num_attempts, cv2.KMEANS_RANDOM_CENTERS)
     # # flatten labels so they can be used for boolean indexing
     # labels = labels.flatten()
 
-    # for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+    # for i in range(HoughTransform.settings.lanes.num_to_detect):
     #   lines_in_cluster = lane_lines[labels == i]
       # print('labeled', lines_in_cluseter)
       # mu, sigma = numpy.mean(lines_in_cluseter, axis=0), numpy.std(lines_in_cluseter, axis=0, ddof=1)
@@ -246,7 +228,7 @@ class HoughTransform(Pipeline):
       # if numpy.isfinite(sigma[0]) and numpy.isfinite(sigma[1]):
       #   print('filter')
       #   lines_in_cluseter = lines_in_cluseter[numpy.all(numpy.abs(lines_in_cluseter - mu) < 1.0*sigma, axis=1)]
-      #   compactness, labels, centers = cv2.kmeans(lines_in_cluseter, 1, None, criteria, HoughTransform.K_MEANS_NUM_ATTEMPTS, cv2.KMEANS_RANDOM_CENTERS)
+      #   compactness, labels, centers = cv2.kmeans(lines_in_cluseter, 1, None, criteria, HoughTransform.settings.k_means.num_attempts, cv2.KMEANS_RANDOM_CENTERS)
       #   print('lables', labels)
       #   print('lines_in_cluster', lines_in_cluseter)
       #   print(len(labels) == len(lines_in_cluseter))
@@ -285,7 +267,7 @@ class HoughTransform(Pipeline):
     # placehold array is required (empty)
     # any traced lines of length less than minLineLength are rejected
     # max line gap is the maximum distance in pixels between segmented lines which we will allow to be connected as one
-    hough_lines = cv2.HoughLinesP(masked, HoughTransform.HOUGH_LINES_RHO_PIXELS, numpy.deg2rad(HoughTransform.HOUGH_LINES_THETA_DEGREES), HoughTransform.HOUGH_LINES_THRESHOLD, numpy.array([]), minLineLength=HoughTransform.HOUGH_LINES_MIN_LINE_LENGTH, maxLineGap=HoughTransform.HOUGH_LINES_MAX_LINE_GAP)
+    hough_lines = cv2.HoughLinesP(masked, HoughTransform.settings.hough_lines.rho, numpy.deg2rad(HoughTransform.settings.hough_lines.theta), HoughTransform.settings.hough_lines.threshold, numpy.array([]), minLineLength=HoughTransform.settings.hough_lines.min_line_length, maxLineGap=HoughTransform.settings.hough_lines.max_line_gap)
 
     # add the result of the hough lines to the pipeline
     hough_overlay = self._display_lines(frame, hough_lines)
@@ -302,11 +284,11 @@ class HoughTransform(Pipeline):
     # returns a vector the same length as filtered_lines with each entry corresponding to whether the line is right or left
     line_labels = self._classify_lanes(filtered_lines)
 
-    lanes = numpy.zeros((HoughTransform.NUM_LANES_TO_DETECT, 2))
+    lanes = numpy.zeros((HoughTransform.settings.lanes.num_to_detect, 2))
     lines_with_closeness_filter = numpy.zeros((0, 2))
 
     # for both right and left lines, do the following
-    for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+    for i in range(HoughTransform.settings.lanes.num_to_detect):
       # get the lines corresponding to correct side from filtered_lines
       lane_lines = filtered_lines[line_labels == i]
       num_lines, *remaining = lane_lines.shape
@@ -335,8 +317,8 @@ class HoughTransform(Pipeline):
     detected_lanes_result = cv2.addWeighted(frame, 0.8, detected_lanes_overlay, 1, 0)
     self._add_knot('Detected Lanes Result', detected_lanes_result)
 
-    past_lines = numpy.empty((1, HoughTransform.NUM_LANES_TO_DETECT, 2))
-    for i in range(HoughTransform.NUM_LANES_TO_DETECT):
+    past_lines = numpy.empty((1, HoughTransform.settings.lanes.num_to_detect, 2))
+    for i in range(HoughTransform.settings.lanes.num_to_detect):
       # get the predicted future line from the past detected lines
       historic_fill = self._historic_fill(column=i)
 
@@ -370,6 +352,3 @@ class HoughTransform(Pipeline):
     fill_and_average_overlay = self._display_lines(frame, lanes)
     fill_and_average_result = cv2.addWeighted(frame, 0.8, fill_and_average_overlay, 1, 0)
     self._add_knot('Fill And Average Lanes Result', fill_and_average_result)
-
-    if self._show_pipeline:
-      self._display_pipeline()
