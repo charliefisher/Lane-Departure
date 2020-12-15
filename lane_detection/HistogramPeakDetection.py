@@ -1,6 +1,6 @@
 import numpy
 
-from lane_detection.Pipeline.Pipeline import Pipeline
+from Pipeline import Pipeline
 
 
 

@@ -9,12 +9,19 @@ from multiprocessing import Process
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-import settings
-import Pipeline.RegionOfInterest as ROI
+import settings as _settings
+import Pipeline.utils as utils
+from general.friend import Friendable, register_friend
+
+settings = _settings.load(_settings.SettingsCategories.PIPELINES, _settings.PipelineSettings.GENERAL)
+
+NUM_IMAGE_CHANNELS = 3
 
 
 
-class Pipeline(ABC, Process):
+
+@register_friend(utils.Visualizer)
+class Pipeline(ABC, Process, Friendable):
   """
   A superclass for OpenCV lane detection
 
@@ -56,10 +63,6 @@ class Pipeline(ABC, Process):
   :ivar __while_paused: stores the function to be executed while the pipeline is paused
   """
 
-  settings = settings.load(settings.SettingsCategories.PIPELINES, settings.PipelineSettings.GENERAL)
-
-  NUM_IMAGE_CHANNELS = 3
-
   def __init__(self, source: str, *,
                should_start: bool = True,
                show_pipeline: bool = True,
@@ -88,12 +91,13 @@ class Pipeline(ABC, Process):
     self._image_mask_enabled = image_mask_enabled
     self._debug = debug
     self._show_pipeline = show_pipeline or self._debug
-    self._show_pipeline_steps = Pipeline.settings.display.show_pipeline_steps
+    self._show_pipeline_steps = settings.display.show_pipeline_steps
     self._knots = []
 
-    screen_dimensions = (Pipeline.settings.window.height, Pipeline.settings.window.width, Pipeline.NUM_IMAGE_CHANNELS)
+    screen_dimensions = (settings.window.height, settings.window.width, NUM_IMAGE_CHANNELS)
     # protected
     self._screen = numpy.zeros(screen_dimensions, numpy.uint8)
+    self._visualizer = None
     self._region_of_interest = None
     self._capture = None
 
@@ -220,7 +224,8 @@ class Pipeline(ABC, Process):
             first_frame = False
           self._run(self._frame)  # run the pipeline
           if self._show_pipeline:  # display the pipeline
-            self.__display_pipeline()
+            # self.__display_pipeline()
+            self._visualizer.get()
         else:
           self.stop()  # stop the pipeline if we hit the end of the video or encountered an error
 
@@ -293,8 +298,9 @@ class Pipeline(ABC, Process):
 
     # check if image mask is enabled, if so check if a mask was already defined or get the user to define one
     if self._image_mask_enabled:
-      self._region_of_interest = ROI.RegionOfInterest(self)
+      self._region_of_interest = utils.RegionOfInterest(self)
       self._region_of_interest.load()
+      self._visualizer = utils.Visualizer(self)
 
   def is_paused(self):
     """
@@ -419,10 +425,10 @@ class Pipeline(ABC, Process):
 
       # add the title of the knot to the image
       title = '{index}  -  {name}'.format(index=index, name=name)
-      title_bounding_box, title_basline = cv2.getTextSize(title, Pipeline.settings.font.face, Pipeline.settings.font.scale, Pipeline.settings.font.thickness)
+      title_bounding_box, title_basline = cv2.getTextSize(title, settings.font.face, settings.font.scale, settings.font.thickness)
       text_width, text_height = title_bounding_box
-      position = (start_x + Pipeline.settings.font.edge_offset, start_y + text_height + Pipeline.settings.font.edge_offset)
-      cv2.putText(self._screen, title, position, Pipeline.settings.font.face, Pipeline.settings.font.scale, Pipeline.settings.font.color, Pipeline.settings.font.thickness)
+      position = (start_x + settings.font.edge_offset, start_y + text_height + settings.font.edge_offset)
+      cv2.putText(self._screen, title, position, settings.font.face, settings.font.scale, settings.font.color, settings.font.thickness)
 
     # split the pipeline into the final and intermediate steps
     pipeline_steps = self.__current_knots[:-1]
@@ -462,8 +468,8 @@ class Pipeline(ABC, Process):
       # return the next lowest square greater than num
       next_square = lambda num: int(round(math.pow(math.ceil(math.sqrt(abs(num))), 2)))
 
-      # the actual ratio of the final image (will be grater than or equal to Pipeline.settings.display.minimum_final_image_ratio)
-      RESULT_IMAGE_RATIO = Pipeline.settings.display.minimum_final_image_ratio
+      # the actual ratio of the final image (will be grater than or equal to settings.display.minimum_final_image_ratio)
+      RESULT_IMAGE_RATIO = settings.display.minimum_final_image_ratio
       # initialize variables concerned with the size of pipeline step bins
       # (will get set later when calculating RESULT_IMAGE_RATIO)
       num_bins_top_left = None
@@ -505,7 +511,7 @@ class Pipeline(ABC, Process):
           raise FloatingPointError('Failed trying to find best ratio for result image. This was caused by a floating point decimal error on repeating digits. Update the pipeline.config file and try again. The recomended ratio is {new_ratio} (simply fix the repeating decimals)'.format(new_ratio=RESULT_IMAGE_RATIO))
 
       # calculate the dimensions of a pipeline step
-      container_width = int(round(Pipeline.settings.window.width * (1 - RESULT_IMAGE_RATIO)))
+      container_width = int(round(settings.window.width * (1 - RESULT_IMAGE_RATIO)))
       step_width = container_width // horizontal_bins_dimension
       step_height = int(round(step_width * aspect_ratio))
 
@@ -520,9 +526,9 @@ class Pipeline(ABC, Process):
         i += 1
 
       # add the final step to the screen in the bottom left quarter
-      output_width = int(round(Pipeline.settings.window.width * RESULT_IMAGE_RATIO))
-      output_height = int(round(Pipeline.settings.window.height * RESULT_IMAGE_RATIO))
-      add_knot_to_screen(len(self.__current_knots), knot=final_step, new_dimension=(output_width, output_height), position=(Pipeline.settings.window.height-output_height, Pipeline.settings.window.width-output_width))
+      output_width = int(round(settings.window.width * RESULT_IMAGE_RATIO))
+      output_height = int(round(settings.window.height * RESULT_IMAGE_RATIO))
+      add_knot_to_screen(len(self.__current_knots), knot=final_step, new_dimension=(output_width, output_height), position=(settings.window.height-output_height, settings.window.width-output_width))
 
       cv2.imshow(self._name, self._screen)
     else:
