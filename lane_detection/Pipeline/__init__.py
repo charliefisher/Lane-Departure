@@ -61,6 +61,8 @@ class Pipeline(ABC, Process, Friendable):
                 guaranteed to be filled)
   :ivar __paused: indicates whether or not the pipeline is currently paused
   :ivar __while_paused: stores the function to be executed while the pipeline is paused
+
+  :friend Pipeline.utils.Visualizer
   """
 
   def __init__(self, source: str, *,
