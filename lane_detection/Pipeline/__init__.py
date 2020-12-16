@@ -301,7 +301,7 @@ class Pipeline(ABC, Process, Friendable):
     # check if image mask is enabled, if so check if a mask was already defined or get the user to define one
     if self._image_mask_enabled:
       self._region_of_interest = utils.RegionOfInterest(self)
-      self._region_of_interest.load()
+      assert self._region_of_interest.load()  # assert that we loaded a region of interest mask
       self._visualizer = utils.Visualizer(self)
 
   def is_paused(self):

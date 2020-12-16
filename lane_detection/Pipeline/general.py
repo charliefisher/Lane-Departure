@@ -1,17 +1,22 @@
+"""
+A collection of general functions used in image processing pipelines.
+
+Any logic that is not pipeline specific should reside in this file.
+"""
+
+
 import cv2
 import numpy
 
 
-def region_of_interest(pipeline, image):
+def region_of_interest(pipeline, image) -> numpy.array:
   """
-  Applies the region of interest mask to a given image and adds the result to the pipeline. Since the pipeline class
-  handles image masking for subclasses (if it is enabled), this method acts as the interface for subclasses to
-  automatically apply the image mask to a given step in the pipeline. It is the subclasses responsibility to call this
-  method at the appropriate point in the lane detection pipeline.
+  Applies the region of interest mask to a given image
 
+  :param pipeline: the pipeline the region of interest mask is applied to
   :param image: the image to apply the region of interest mask to
   :raises RuntimeError is raised if this method is called on a pipeline where the image mask is disabled
-  :return: masked: the image provided with the region of interest mask applied
+  :return: numpy.array: the image provided with the region of interest mask applied
   """
 
   # raise an Error if the method is called on a pipeline whose image mask is disabled

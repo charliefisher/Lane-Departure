@@ -9,6 +9,21 @@ import Pipeline
 
 
 class RegionOfInterest:
+  """
+  Handles loading, saving, and editing a region of interest mask
+
+  Use:
+    get() accessor for the region of interest
+    load() loads the region of interest for the source of the current pipeline. Depending on _when_missing_open_editor,
+           this method may open the region of interest editor
+    save() saves the current region of interest to settings (so it persists across runs)
+    editor() allows the user to edit the current region of interest mask
+
+  :ivar _pipeline: an instance of Pipeline.Pipeline that this instance corresponds to
+  :ivar _when_missing_open_editor: a flag indicating whether the editor should automatically open if a region of
+            interest mask does not exist for the pipeline's source
+  :ivar _roi: the region of interest mask - this is a list of tuples where each tuple is a coordinate in 2D space
+  """
 
   # define keys to keep and discard changes in editor
   EDITOR_CONFIRM_KEY = 'y'
@@ -20,12 +35,25 @@ class RegionOfInterest:
     self._roi = None
 
   def get(self) -> list[tuple[int, int]]:
+    """
+    Accessor for the region of interest mask
+
+    :raises RuntimeError if the region of interest mask is undefined (has not been loaded or created yet)
+    :return: list[tuple[int, int]]
+    """
+
     if self._roi is None:
-      raise Exception('Roi does not exist. Call {cls}::load or {cls}::editor'.format(cls=self.__class__.__name__))
+      raise RuntimeError('Roi does not exist. Call {cls}::load or {cls}::editor'.format(cls=self.__class__.__name__))
     else:
       return self._roi
 
   def load(self) -> bool:
+    """
+    Loads the region of interest from disk for the pipeline's source
+
+    :return: bool (the success status of the load operation)
+    """
+
     rois = settings.load(settings.SettingsCategories.INPUT, settings.InputSettings.ROI, must_exist=False)
     if rois is None or rois.get(self._pipeline.source, None) is None:
       if self._when_missing_open_editor:
@@ -36,19 +64,27 @@ class RegionOfInterest:
       self._roi = rois[self._pipeline.source]
       return True
 
-  def save(self, roi: list[tuple[int, int]]) -> None:
+  def save(self) -> None:
+    """
+    Saves the region of interest to disk
+
+    The ensures that the region of interest persists across multiple executions. Additionally, it allows multiple
+    pipelines to share the same region of interest for a given source.
+
+    :return: void
+    """
+
     new_settings = SimpleNamespace()
-    new_settings[self._pipeline.source]['roi'] = roi
+    new_settings[self._pipeline.source] = self._roi
     settings.save(settings.SettingsCategories.INPUT, settings.InputSettings.ROI, new_settings)
 
   def editor(self, frame: numpy.array) -> bool:
       """
-      Gets user to manually modify the region of interest mask, which is stored in a file. User can either keep or discard
-      their new changes.
+      Allows user to manually modify the region of interest mask. The user can either keep or discard their changes.
 
       :param frame: the frame of the pipeline to display that assists the user pick a suitable region of interest
       :raises RuntimeError is raised if this method is called on a pipeline where the image mask is disabled
-      :return: void
+      :return: bool (whether changes were accepted or discarded)
       """
 
       # raise an Error if the method is called on a pipeline whose image mask is disabled
@@ -114,9 +150,9 @@ class RegionOfInterest:
         keypress = cv2.waitKey(1) & 0xFF
         # if changes were accepted
         if keypress == ord(RegionOfInterest.EDITOR_CONFIRM_KEY):
-          # update the region of interest in the pipeline
-          settings.save(settings.SettingsCategories.INPUT, settings.InputSettings.ROI,
-                        {self._pipeline.source: new_region_of_interest})
+          # save the region of interest to file
+          self._roi = new_region_of_interest
+          self.save()
           updated = True
           break
         elif keypress == ord(RegionOfInterest.EDITOR_DENY_KEY):
@@ -131,6 +167,23 @@ class RegionOfInterest:
 
 class Visualizer:
   '''
+  Handles displaying an Image Processing Pipeline
+
+  This can be used for visualization or debugging purposes. Depending on the state of _show_pipeline_steps, the steps of
+  the pipeline may or may not be shown.
+
+  :ivar _pipeline: an instance of Pipeline.Pipeline that this instance corresponds to
+  :ivar _has_init: a flag to indicate if the Visualizer has completed initialization steps using the first frame
+            recieved
+  :ivar _horizontal_bins_dimension: the number of steps that should be displayed along the horizontal
+  :ivar _vertical_bins_dimension: the number of steps that should be displayed along the vertical
+  :ivar _result_image_ratio: the ratio of the total screen that the final step occupies when displaying all knots
+  :ivar _aspect_ratio: the aspect ratio of each knot in the pipeline
+  :ivar _knots: the knots in the pipeline - a list of tuples where each tuple has the form (name, image)
+  :ivar _num_steps: the number of intermediate steps in the pipeline (in other words, excluding the final step)
+  :ivar _container_width: the width in pixels of the region containing the intermediate steps in the resultant composite
+  :ivar _step_width: the width in pixels of a step in the image processing pipeline in the resultant composite
+  :ivar _step_height: the height in pixels of a step in the image processing pipeline in the resultant composite
 
   :friend_of Pipeline.Pipeline
   '''
@@ -139,20 +192,18 @@ class Visualizer:
     self._pipeline = pipeline
     self._has_init = False
 
-    # initialize variables concerned with the size of pipeline step bins
-    # (will get set later when calculating self.result_image_ratio)
+    # initialize variables related to displaying the pipeline steps
+    # size of pipeline step bins - set in Visualizer::_calculate_dimensions_given_ratio
     self._horizontal_bins_dimension = 0
     self._vertical_bins_dimension = 0
-
+    # ratio of final step - set in Visualizer::_determine_knot_image_size
     self._result_image_ratio = 1
-
-    # initialize the aspect ratio (gets set later when the pipeline is checked for consistent aspect ratios)
+    # aspect ratio of knots in the pipeline - set in Visualizer::_check_aspect_ratios_and_fix_num_channels
     self._aspect_ratio = None
-
-    # initialize the pipeline steps
+    # pipeline knots - set in Visualizer::get
     self._knots = []
     self._num_steps = 0
-
+    # pipeline steps display size - set in Visualizer::get
     self._container_width = 0
     self._step_width = 0
     self._step_height = 0
@@ -180,6 +231,8 @@ class Visualizer:
         self._step_width = self._container_width // self._horizontal_bins_dimension
         self._step_height = int(round(self._step_width * self._aspect_ratio))
 
+        self._has_init = True  # mark init flag as true
+
       # iterate through all but the final step and display those knots in the pipeline
       for i, step in enumerate(self._knots[:-1]):
         # add the knot to the screen at the correct position
@@ -202,6 +255,14 @@ class Visualizer:
       cv2.imshow(self._pipeline.name, image)
 
   def _check_aspect_ratios_and_fix_num_channels(self):
+    """
+    Iterates over the knots in a pipeline and simultaneously confirms that all have the same aspect ratio and converts
+    knots to a consistent number of channels
+
+    :raises RuntimeError if the not all of the knots in the pipeline have the same aspect ratio
+    :return: void
+    """
+
     # check that all steps of the pipeline have the same aspect ratio (if not raise and error)
     # simultaneously, check if any images are single channel and convert them to the correct number of channels
     for i, knot in enumerate(self._pipeline.friend_access(self, '__current_knots')):
@@ -253,6 +314,15 @@ class Visualizer:
     self._vertical_bins_dimension = math.pow(1 - ratio, -1) * self._horizontal_bins_dimension
 
   def _determine_knot_image_size(self):
+    """
+    Determines the dimensions of an intermediate step in the pipeline given the minimum_final_image_ratio (set in
+    settings)
+
+    :raises FloatingPointError if the Visualizer encounters an infinite loop due to floating point round-off. To solve
+                the issue, minimum_final_image_ratio must be updated to the correctly rounded-off value (without
+                repeating decimals)
+    :return: void
+    """
     # the actual ratio of the final image (will be grater than or equal to
     # Pipeline.settings.display.minimum_final_image_ratio)
     self._result_image_ratio = Pipeline.settings.display.minimum_final_image_ratio
