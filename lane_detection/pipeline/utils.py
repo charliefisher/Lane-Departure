@@ -5,7 +5,7 @@ import cv2
 import numpy
 
 import settings
-import Pipeline
+import pipeline
 
 
 class RegionOfInterest:
@@ -19,7 +19,7 @@ class RegionOfInterest:
     save() saves the current region of interest to settings (so it persists across runs)
     editor() allows the user to edit the current region of interest mask
 
-  :ivar _pipeline: an instance of Pipeline.Pipeline that this instance corresponds to
+  :ivar _pipeline: an instance of pipeline.Pipeline that this instance corresponds to
   :ivar _when_missing_open_editor: a flag indicating whether the editor should automatically open if a region of
             interest mask does not exist for the pipeline's source
   :ivar _roi: the region of interest mask - this is a list of tuples where each tuple is a coordinate in 2D space
@@ -29,7 +29,7 @@ class RegionOfInterest:
   EDITOR_CONFIRM_KEY = 'y'
   EDITOR_DENY_KEY = 'n'
 
-  def __init__(self, pipeline: 'Pipeline.Pipeline', when_missing_open_editor: bool = True) -> None:
+  def __init__(self, pipeline: 'pipeline.Pipeline', when_missing_open_editor: bool = True) -> None:
     self._pipeline = pipeline
     self._when_missing_open_editor = when_missing_open_editor
     self._roi = None
@@ -115,14 +115,14 @@ class RegionOfInterest:
       # add instructions to the screen on selecting image mask
       text = "Select Region of Interest - '{confirm}' to confirm changes and '{deny}' to disregard changes"\
              .format(confirm=RegionOfInterest.EDITOR_CONFIRM_KEY, deny=RegionOfInterest.EDITOR_DENY_KEY)
-      text_bounding_box, text_baseline = cv2.getTextSize(text, Pipeline.settings.font.face,
-                                                         Pipeline.settings.font.scale,
-                                                         Pipeline.settings.font.thickness)
+      text_bounding_box, text_baseline = cv2.getTextSize(text, pipeline.settings.font.face,
+                                                         pipeline.settings.font.scale,
+                                                         pipeline.settings.font.thickness)
       text_width, text_height = text_bounding_box
-      position = (5 + Pipeline.settings.font.edge_offset,
-                  5 + text_height + Pipeline.settings.font.edge_offset)
-      cv2.putText(frame, text, position, Pipeline.settings.font.face, Pipeline.settings.font.scale,
-                  Pipeline.settings.font.color, Pipeline.settings.font.thickness)
+      position = (5 + pipeline.settings.font.edge_offset,
+                  5 + text_height + pipeline.settings.font.edge_offset)
+      cv2.putText(frame, text, position, pipeline.settings.font.face, pipeline.settings.font.scale,
+                  pipeline.settings.font.color, pipeline.settings.font.thickness)
 
       # show the window and add click listener to modify the image mask
       window_name = '{name} - Select Region of Interest'.format(name=self._pipeline.name)
@@ -167,12 +167,12 @@ class RegionOfInterest:
 
 class Visualizer:
   '''
-  Handles displaying an Image Processing Pipeline
+  Handles displaying an Image Processing pipeline
 
   This can be used for visualization or debugging purposes. Depending on the state of _show_pipeline_steps, the steps of
   the pipeline may or may not be shown.
 
-  :ivar _pipeline: an instance of Pipeline.Pipeline that this instance corresponds to
+  :ivar _pipeline: an instance of pipeline.Pipeline that this instance corresponds to
   :ivar _has_init: a flag to indicate if the Visualizer has completed initialization steps using the first frame
             recieved
   :ivar _horizontal_bins_dimension: the number of steps that should be displayed along the horizontal
@@ -185,10 +185,10 @@ class Visualizer:
   :ivar _step_width: the width in pixels of a step in the image processing pipeline in the resultant composite
   :ivar _step_height: the height in pixels of a step in the image processing pipeline in the resultant composite
 
-  :friend_of Pipeline.Pipeline
+  :friend_of pipeline.Pipeline
   '''
 
-  def __init__(self, pipeline: 'Pipeline.Pipeline') -> None:
+  def __init__(self, pipeline: 'pipeline.Pipeline') -> None:
     self._pipeline = pipeline
     self._has_init = False
 
@@ -227,7 +227,7 @@ class Visualizer:
         self._determine_knot_image_size()
 
         # calculate the dimensions of a pipeline step
-        self._container_width = int(round(Pipeline.settings.window.width * (1 - self._result_image_ratio)))
+        self._container_width = int(round(pipeline.settings.window.width * (1 - self._result_image_ratio)))
         self._step_width = self._container_width // self._horizontal_bins_dimension
         self._step_height = int(round(self._step_width * self._aspect_ratio))
 
@@ -242,12 +242,12 @@ class Visualizer:
                                 position=(start_y, start_x))
 
       # add the final step to the screen in the bottom left quarter
-      output_width = int(round(Pipeline.settings.window.width * self._result_image_ratio))
-      output_height = int(round(Pipeline.settings.window.height * self._result_image_ratio))
+      output_width = int(round(pipeline.settings.window.width * self._result_image_ratio))
+      output_height = int(round(pipeline.settings.window.height * self._result_image_ratio))
       self._add_knot_to_image(len(self._knots), knot=self._knots[-1],
                               new_dimension=(output_width, output_height),
-                              position=(Pipeline.settings.window.height - output_height,
-                                        Pipeline.settings.window.width - output_width))
+                              position=(pipeline.settings.window.height - output_height,
+                                        pipeline.settings.window.width - output_width))
 
       cv2.imshow(self._pipeline.name, self._pipeline.friend_access(self, '_screen'))
     else:  # only one step or show pipeline steps is disabled
@@ -282,8 +282,8 @@ class Visualizer:
       # if the image is single channel (grayscale), convert it to 3 channels (still grayscale)
       # this allows the images to be merged into one
       if num_channels == 1:
-        temp_image = numpy.empty((height, width, Pipeline.NUM_IMAGE_CHANNELS))
-        for channel in range(Pipeline.NUM_IMAGE_CHANNELS):
+        temp_image = numpy.empty((height, width, pipeline.NUM_IMAGE_CHANNELS))
+        for channel in range(pipeline.NUM_IMAGE_CHANNELS):
           temp_image[:, :, channel] = image
 
         self._knots[i] = (name, temp_image)
@@ -324,8 +324,8 @@ class Visualizer:
     :return: void
     """
     # the actual ratio of the final image (will be grater than or equal to
-    # Pipeline.settings.display.minimum_final_image_ratio)
-    self._result_image_ratio = Pipeline.settings.display.minimum_final_image_ratio
+    # pipeline.settings.display.minimum_final_image_ratio)
+    self._result_image_ratio = pipeline.settings.display.minimum_final_image_ratio
 
     # mimic a do-while loop
     while True:
@@ -342,7 +342,7 @@ class Visualizer:
       # due to floating point precision errors, sometimes repeating decimals get rounded in an undesirable manner
       # essentially, the program has successfully found the desired ratio, but rounds it causing the program to fail
       # if this occurs, raise an error and instruct the user to fix the rounding error and update the value in
-      # Pipeline settings
+      # pipeline settings
       if prev == self._result_image_ratio:
         raise FloatingPointError('Failed trying to find best ratio for result image. This was caused by a floating ' +
                                  'point decimal error on repeating digits. Update the pipeline.config file and try ' +
@@ -371,11 +371,11 @@ class Visualizer:
 
     # add the title of the knot to the image
     title = '{index} - {name}'.format(index=index, name=name)
-    title_bounding_box, title_basline = cv2.getTextSize(title, Pipeline.settings.font.face,
-                                                        Pipeline.settings.font.scale,
-                                                        Pipeline.settings.font.thickness)
+    title_bounding_box, title_basline = cv2.getTextSize(title, pipeline.settings.font.face,
+                                                        pipeline.settings.font.scale,
+                                                        pipeline.settings.font.thickness)
     text_width, text_height = title_bounding_box
-    position = (start_x + Pipeline.settings.font.edge_offset,
-                start_y + text_height + Pipeline.settings.font.edge_offset)
-    cv2.putText(self._pipeline.friend_access(self, '_screen'), title, position, Pipeline.settings.font.face,
-                Pipeline.settings.font.scale, Pipeline.settings.font.color, Pipeline.settings.font.thickness)
+    position = (start_x + pipeline.settings.font.edge_offset,
+                start_y + text_height + pipeline.settings.font.edge_offset)
+    cv2.putText(self._pipeline.friend_access(self, '_screen'), title, position, pipeline.settings.font.face,
+                pipeline.settings.font.scale, pipeline.settings.font.color, pipeline.settings.font.thickness)

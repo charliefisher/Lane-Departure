@@ -7,8 +7,8 @@ import math
 import time
 from matplotlib import pyplot as plot
 
-from Pipeline import Pipeline
-from Pipeline.general import region_of_interest
+from pipeline import Pipeline
+from pipeline.general import region_of_interest
 import settings
 
 # import warnings

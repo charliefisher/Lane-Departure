@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 import settings as _settings
-import Pipeline.utils as utils
+import pipeline.utils as utils
 from general.friend import Friendable, register_friend
 
 settings = _settings.load(_settings.SettingsCategories.PIPELINES, _settings.PipelineSettings.GENERAL)
@@ -62,7 +62,7 @@ class Pipeline(ABC, Process, Friendable):
   :ivar __paused: indicates whether or not the pipeline is currently paused
   :ivar __while_paused: stores the function to be executed while the pipeline is paused
 
-  :friend Pipeline.utils.Visualizer
+  :friend pipeline.utils.Visualizer
   """
 
   def __init__(self, source: str, *,
@@ -204,7 +204,7 @@ class Pipeline(ABC, Process, Friendable):
 
     # check if function was called by Process superclass and raise an error if it was not
     if inspect.stack()[1].function != '_bootstrap':
-      raise RuntimeError('Pipeline::run can only be invoked by multiprocessing::Process')
+      raise RuntimeError('pipeline::run can only be invoked by multiprocessing::Process')
 
     self.__open_source(self._source)  # open input
     first_frame = True  # initialize a flag used to indicate if init_pipeline should be run
@@ -277,7 +277,7 @@ class Pipeline(ABC, Process, Friendable):
   def _handle_keypress(self, keypress):
     """
     @Override - subclass CAN override this function (it is optional)
-    Where subclass can add custom keypress events. Cannot override keypress events in Pipeline.py. This inhibits the use
+    Where subclass can add custom keypress events. Cannot override keypress events in pipeline.py. This inhibits the use
     of the 'q', 'p', and 's' keys and possibly the 'm' key, depending on the state of _image_mask_enabled.
 
     :param keypress: the code of the keypress (will never correspond to any of the keys used for default keypress events)
@@ -508,7 +508,7 @@ class Pipeline(ABC, Process, Friendable):
         # due to floating point precision errors, sometimes repeating decimals get rounded in an undesirable manner
         # essentially, the program has successfully found the desired ratio, but rounds it causing the program to fail
         # if this occurs, raise an error and instruct the user to fix the rounding error and update the value in
-        # Pipeline settings
+        # pipeline settings
         if prev == RESULT_IMAGE_RATIO:
           raise FloatingPointError('Failed trying to find best ratio for result image. This was caused by a floating point decimal error on repeating digits. Update the pipeline.config file and try again. The recomended ratio is {new_ratio} (simply fix the repeating decimals)'.format(new_ratio=RESULT_IMAGE_RATIO))
 
