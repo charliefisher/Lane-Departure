@@ -29,7 +29,8 @@ def region_of_interest(pipeline, image) -> numpy.array:
   # mask is the base image to add the region of interest mask to
   mask = numpy.zeros_like(image)
   # add the region of interst mask to the base image (all black)
-  cv2.fillPoly(mask, roi, 255)
+  n_channels = mask.shape[2] if len(mask.shape) == 3 else 1
+  cv2.fillPoly(mask, roi, (255,) * n_channels)
   # mask the provided image based on the region of interest
   masked = cv2.bitwise_and(image, mask)
   # return the masked image

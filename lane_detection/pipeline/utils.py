@@ -5,7 +5,7 @@ import cv2
 import numpy
 
 import settings
-import pipeline
+import lane_detection.pipeline as pipeline
 
 
 class RegionOfInterest:

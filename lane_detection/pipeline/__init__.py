@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 
 import settings as _settings
-import pipeline.utils as utils
+import lane_detection.pipeline.utils as utils
 from general.friend import Friendable, register_friend
 
 settings = _settings.load(_settings.SettingsCategories.PIPELINES, _settings.PipelineSettings.GENERAL)
