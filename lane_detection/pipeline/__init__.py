@@ -264,6 +264,9 @@ class Pipeline(ABC, Process, Friendable):
     # p - toggle displaying the pipeline steps
     elif keypress == ord('p'):
       self._show_pipeline_steps = not self._show_pipeline_steps
+    # esc - reset the debug image (top right)
+    elif keypress == ord('\x1b'):
+      self._visualizer.reset_debug_image()
     # s - take a screenshot of the pipeline (saves each knot in the pipeline)
     elif keypress == ord('s'):
       self.take_screenshot()

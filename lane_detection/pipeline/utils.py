@@ -1,6 +1,6 @@
-from types import SimpleNamespace
-
+import copy
 import math
+
 import cv2
 import numpy
 
@@ -74,8 +74,8 @@ class RegionOfInterest:
     :return: void
     """
 
-    new_settings = SimpleNamespace()
-    new_settings[self._pipeline.source] = self._roi
+    new_settings = settings.config_dict()
+    new_settings[self._pipeline.source] = copy.deepcopy(self._roi)
     settings.save(settings.SettingsCategories.INPUT, settings.InputSettings.ROI, new_settings)
 
   def editor(self, frame: numpy.array) -> bool:
@@ -192,6 +192,8 @@ class Visualizer:
     self._pipeline = pipeline
     self._has_init = False
 
+    self._debug_index = None
+
     # initialize variables related to displaying the pipeline steps
     # size of pipeline step bins - set in Visualizer::_calculate_dimensions_given_ratio
     self._horizontal_bins_dimension = 0
@@ -207,6 +209,12 @@ class Visualizer:
     self._container_width = 0
     self._step_width = 0
     self._step_height = 0
+    # debug step size  - set in Visualizer::get
+    self._debug_width = 0
+    self._debug_height = 0
+    # final step size  - set in Visualizer::get
+    self._output_width = 0
+    self._output_height = 0
 
   def get(self):
     """
@@ -224,6 +232,9 @@ class Visualizer:
     if self._pipeline.show_pipeline_steps and self._num_steps > 0:
       self._check_aspect_ratios_and_fix_num_channels()
       if not self._has_init:
+        # create the window so we can attached a mouse click listener
+        cv2.namedWindow(self._pipeline.name)
+
         self._determine_knot_image_size()
 
         # calculate the dimensions of a pipeline step
@@ -231,6 +242,32 @@ class Visualizer:
         self._step_width = self._container_width // self._horizontal_bins_dimension
         self._step_height = int(round(self._step_width * self._aspect_ratio))
 
+        # calculate dimensions of output step
+        self._output_width = int(round(pipeline.settings.window.width * self._result_image_ratio))
+        self._output_height = int(round(pipeline.settings.window.height * self._result_image_ratio))
+
+        # calculate dimensions of debug step
+        self._debug_height = int(min(self._output_height, pipeline.settings.window.height - self._output_height))
+        self._debug_width = int(self._debug_height / self._aspect_ratio)
+
+        def handle_debug_select_click(event, x: int, y: int, flags, param):
+          """
+          Handles clicks on the frame to modify the new image mask.
+
+          :param event: the event type of the click
+          :param x: the x coordinate of the click event
+          :param y: the y coordinate of the click event
+          :param flags: unused - see OpenCV documentation (https://docs.opencv.org/2.4/modules/highgui/doc/user_interface.html#setmousecallback)
+          :param param: unused - see OpenCV documentation (https://docs.opencv.org/2.4/modules/highgui/doc/user_interface.html#setmousecallback)
+          :return: void
+          """
+
+          # only handle left clicks
+          if event == cv2.EVENT_LBUTTONDOWN:
+            # determine the index of the click
+            self._debug_index = (y // self._step_height) * self._horizontal_bins_dimension + (x // self._step_width)
+
+        cv2.setMouseCallback(self._pipeline.name, handle_debug_select_click)
         self._has_init = True  # mark init flag as true
 
       # iterate through all but the final step and display those knots in the pipeline
@@ -242,17 +279,28 @@ class Visualizer:
                                 position=(start_y, start_x))
 
       # add the final step to the screen in the bottom left quarter
-      output_width = int(round(pipeline.settings.window.width * self._result_image_ratio))
-      output_height = int(round(pipeline.settings.window.height * self._result_image_ratio))
       self._add_knot_to_image(len(self._knots), knot=self._knots[-1],
-                              new_dimension=(output_width, output_height),
-                              position=(pipeline.settings.window.height - output_height,
-                                        pipeline.settings.window.width - output_width))
+                              new_dimension=(self._output_width, self._output_height),
+                              position=(pipeline.settings.window.height - self._output_height,
+                                        pipeline.settings.window.width - self._output_width))
+
+      # add the debug image to the screen
+      if self._debug_index is not None:
+        self._add_knot_to_image(self._debug_index, knot=self._knots[self._debug_index],
+                                new_dimension=(self._debug_width, self._debug_height),
+                                position=(0, pipeline.settings.window.width - self._debug_width))
 
       cv2.imshow(self._pipeline.name, self._pipeline.friend_access(self, '_screen'))
     else:  # only one step or show pipeline steps is disabled
       name, image = self._knots[-1]  # final step
       cv2.imshow(self._pipeline.name, image)
+
+  def reset_debug_image(self):
+    # reset the debug portion of the screen to empty
+    self._pipeline.friend_access(self, '_screen')[0:self._debug_height,
+                                                  pipeline.settings.window.width - self._debug_width:pipeline.settings.window.width] = 0
+    # update the debug index so new knots are not added
+    self._debug_index = None
 
   def _check_aspect_ratios_and_fix_num_channels(self):
     """
