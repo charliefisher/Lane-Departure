@@ -12,6 +12,7 @@ import cv2
 import numpy
 
 import lane_detection.pipeline
+from general import constants
 
 
 def region_of_interest(pipeline, image) -> numpy.array:
@@ -43,8 +44,6 @@ def region_of_interest(pipeline, image) -> numpy.array:
 
 
 class HistoricFill:
-  NUM_LANES_TO_DETECT: int = 2
-
   def DEFAULT_HISTORIC_FILL_FUNC(self, x):
     lambda_ = 0.05
     k = 1
@@ -61,9 +60,9 @@ class HistoricFill:
                historic_weighting_func: Optional[Callable[[numpy.array], numpy.array]] = None) -> None:
 
     # will be appended to in HistoricFill::get
-    self._past_lanes = numpy.empty((0, HistoricFill.NUM_LANES_TO_DETECT, lane_poly_deg + 1), numpy.float)
+    self._past_lanes = numpy.empty((0, constants.NUM_LANES_TO_DETECT, lane_poly_deg + 1), numpy.float)
     self._past_ages = numpy.empty((0,), numpy.uint16)
-    self._n_consecutive_autofills = numpy.empty(HistoricFill.NUM_LANES_TO_DETECT, numpy.uint8)
+    self._n_consecutive_autofills = numpy.empty(constants.NUM_LANES_TO_DETECT, numpy.uint8)
 
     self._fps = round(fps)
     self._max_consecutive_autofills = max_consecutive_autofills
@@ -90,7 +89,7 @@ class HistoricFill:
     lanes = detected_lanes
 
     if len(self._past_lanes) > 0:
-      for lane in range(HistoricFill.NUM_LANES_TO_DETECT):
+      for lane in range(constants.NUM_LANES_TO_DETECT):
         # get the predicted future line from the past detected lines
         predicted = self._historic_average(lane)
         assert predicted is not None

@@ -1,15 +1,14 @@
-from configparser import ConfigParser
-from os import path
-import re
-import cv2
-import numpy
 import math
 import time
+
+import cv2
+import numpy
 from matplotlib import pyplot as plot
 
+import settings
+from general import constants
 from lane_detection.pipeline import Pipeline
 from lane_detection.pipeline.general import HistoricFill, region_of_interest
-import settings
 
 # import warnings
 # warnings.simplefilter('ignore', numpy.RankWarning)
@@ -41,7 +40,7 @@ class HoughTransform(Pipeline):
                      show_pipeline=show_pipeline, debug=debug)
 
   def _historic_lanes_weighting_function(self, x):
-    k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - math.pow(math.e, (-0.05016553 * self.fps)))
+    k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - numpy.exp(-0.05016553 * self.fps))
     b = 0.020833333 * self.fps + 1.5
     # k=-0.35
     # b=3
@@ -239,11 +238,11 @@ class HoughTransform(Pipeline):
     # returns a vector the same length as filtered_lines with each entry corresponding to whether the line is right or left
     line_labels = self._classify_lanes(filtered_lines)
 
-    lanes = numpy.zeros((HoughTransform.settings.lanes.num_to_detect, 2))
+    lanes = numpy.zeros((constants.NUM_LANES_TO_DETECT, 2))
     lines_with_closeness_filter = numpy.zeros((0, 2))
 
     # for both right and left lines, do the following
-    for i in range(HoughTransform.settings.lanes.num_to_detect):
+    for i in range(constants.NUM_LANES_TO_DETECT):
       # get the lines corresponding to correct side from filtered_lines
       lane_lines = filtered_lines[line_labels == i]
       num_lines, *remaining = lane_lines.shape

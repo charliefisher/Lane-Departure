@@ -6,9 +6,11 @@ import numpy
 from matplotlib import pyplot as plot
 
 import settings
+from general import constants
+from general.config_dict import config_dict
 from lane_detection.pipeline import Pipeline
 from lane_detection.pipeline.general import HistoricFill, region_of_interest
-from general.config_dict import config_dict
+
 
 
 class HistogramPeakDetection(Pipeline):
@@ -80,20 +82,20 @@ class HistogramPeakDetection(Pipeline):
     num_vertical_windows = height // window_height
 
     # 3rd dimension: 0th entry is left side, 1st entry is right side
-    vertical_averages = numpy.empty((HistogramPeakDetection.settings.lanes.num_to_detect, num_vertical_windows,
-                                     width // HistogramPeakDetection.settings.lanes.num_to_detect),
+    vertical_averages = numpy.empty((constants.NUM_LANES_TO_DETECT, num_vertical_windows,
+                                     width // constants.NUM_LANES_TO_DETECT),
                                     numpy.float)
     for i in range(num_vertical_windows):
       window = detected_image[HistogramPeakDetection.settings.lanes.top_offset + i * window_height:
                               HistogramPeakDetection.settings.lanes.top_offset + (i+1) * window_height + 1, :]
       vertical_window_average = numpy.average(window, axis=0)
-      vertical_averages[0, i, :] = vertical_window_average[0: width // HistogramPeakDetection.settings.lanes.num_to_detect]
-      vertical_averages[1, i, :] = vertical_window_average[width // HistogramPeakDetection.settings.lanes.num_to_detect : ]
+      vertical_averages[0, i, :] = vertical_window_average[0: width // constants.NUM_LANES_TO_DETECT]
+      vertical_averages[1, i, :] = vertical_window_average[width // constants.NUM_LANES_TO_DETECT : ]
 
-    window_maxes = numpy.iinfo(numpy.uint16).max * numpy.ones((HistogramPeakDetection.settings.lanes.num_to_detect,
+    window_maxes = numpy.iinfo(numpy.uint16).max * numpy.ones((constants.NUM_LANES_TO_DETECT,
                                                                num_vertical_windows, n_max_per_window), numpy.uint16)
     for i in range(num_vertical_windows):
-      for lane in range(HistogramPeakDetection.settings.lanes.num_to_detect):
+      for lane in range(constants.NUM_LANES_TO_DETECT):
         n_max_indices = numpy.argpartition(vertical_averages[lane, i, :], -n_max_per_window)[-n_max_per_window:]
         maxes_greater_than_threshold_indices = vertical_averages[lane, i, n_max_indices] >= HistogramPeakDetection.settings.sliding_window.active_threshold
         n_max_indices = n_max_indices[maxes_greater_than_threshold_indices]
@@ -106,14 +108,14 @@ class HistogramPeakDetection(Pipeline):
       plot.show()
       time.sleep(7.5)
 
-    points: list[list[tuple[int, int]]] = [[] for i in range(HistogramPeakDetection.settings.lanes.num_to_detect)]
+    points: list[list[tuple[int, int]]] = [[] for i in range(constants.NUM_LANES_TO_DETECT)]
     for window_index in range(num_vertical_windows):
       y_cord = HistogramPeakDetection.settings.lanes.top_offset + window_index * window_height + window_height // 2
 
-      for lane in range(HistogramPeakDetection.settings.lanes.num_to_detect):
+      for lane in range(constants.NUM_LANES_TO_DETECT):
         for i in range(n_max_per_window):
           if window_maxes[lane, window_index, i] != numpy.iinfo(numpy.uint16).max:
-            points[lane].append((window_maxes[lane, window_index, i] + lane * width // HistogramPeakDetection.settings.lanes.num_to_detect,
+            points[lane].append((window_maxes[lane, window_index, i] + lane * width // constants.NUM_LANES_TO_DETECT,
                                  y_cord))
 
     left_points, right_points = points
