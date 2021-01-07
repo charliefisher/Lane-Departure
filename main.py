@@ -4,6 +4,7 @@ from argparse import ArgumentParser
 import settings
 from lane_detection.HoughTransform import HoughTransform
 from lane_detection.HistogramPeakDetection import HistogramPeakDetection
+from lane_departure import LaneDeparture
 
 
 # global variables that dictate how the lane detection lane_detection should be run
@@ -35,8 +36,10 @@ def __main():
     else:
       raise Exception('Invalid default input type')
 
-  hough = HoughTransform(source)
-  histopeak = HistogramPeakDetection(source)
+  hough = HoughTransform(source, n_consumers=1)
+  histopeak = HistogramPeakDetection(source, n_consumers=1)
+
+  lane_departure = LaneDeparture(hough)
 
 def __parse_args():
   """

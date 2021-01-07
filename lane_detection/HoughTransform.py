@@ -23,6 +23,7 @@ class HoughTransform(Pipeline):
   settings = settings.load(settings.SettingsCategories.PIPELINES, settings.PipelineSettings.HOUGH_TRANSFORM)
 
   def __init__(self, source: str, *,
+               n_consumers: int = 0,
                should_start: bool = True,
                show_pipeline: bool = True,
                debug: bool = False):
@@ -36,7 +37,7 @@ class HoughTransform(Pipeline):
                   shown and debug statements are enabled
     """
 
-    super().__init__(source, image_mask_enabled=True, should_start=should_start,
+    super().__init__(source, n_consumers=n_consumers, image_mask_enabled=True, should_start=should_start,
                      show_pipeline=show_pipeline, debug=debug)
 
   def _historic_lanes_weighting_function(self, x):
@@ -275,3 +276,5 @@ class HoughTransform(Pipeline):
     lane_image = self._display_lines(frame, lanes, overlay_name='Historic Filtered')
     detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
     self._add_knot('Historic Filtered Result', detected_lanes_result)
+
+    self._add_lanes(lanes)

@@ -5,12 +5,13 @@ import time
 import cv2
 import numpy
 from threading import Thread
-from multiprocessing import Process
+from multiprocessing import Process, Queue, BoundedSemaphore, Lock
 from abc import ABC, abstractmethod
 from datetime import datetime
 
 import settings as _settings
 import lane_detection.pipeline.utils as utils
+from general import constants
 from general.friend import Friendable, register_friend
 
 settings = _settings.load(_settings.SettingsCategories.PIPELINES, _settings.PipelineSettings.GENERAL)
@@ -66,6 +67,7 @@ class Pipeline(ABC, Process, Friendable):
   """
 
   def __init__(self, source: str, *,
+               n_consumers: int = 0,
                should_start: bool = True,
                show_pipeline: bool = True,
                image_mask_enabled: bool = True,
@@ -102,6 +104,14 @@ class Pipeline(ABC, Process, Friendable):
     self._visualizer = None
     self._region_of_interest = None
     self._capture = None
+
+    self._n_consumers = n_consumers  # the number of objects consuming the result of this pipeline
+    if self._n_consumers > 0:
+      # stores the currently detected lane - must be a queue as the detected result is accessed from a seperate process
+      self._lanes_queue = Queue()
+      self.__n_consuming = 0  # tracks the number of consumers currently 'consuming' the detected result
+      self.__n_consuming_mutex = Lock()  # blocks access to self.__n_consuming
+      self.__consumer_semaphore = BoundedSemaphore(1)  # used to block pipeline from running while consumers are
 
     # private - only accessible by class
     self.__current_knots = []  # maybe not be filled (most likely, will be partially filled)
@@ -168,6 +178,39 @@ class Pipeline(ABC, Process, Friendable):
     self._debug = value
 
 ##### Method Definitions #####
+  def start_read_lanes(self):
+    if self._n_consumers == 0:
+      raise RuntimeError('Cannot read lanes as the number of configured consumers is', self._n_consumers)
+
+    # read the lanes from the queue
+    # this also blocks until the pipeline finishes executing on the current frame
+    lanes = self._lanes_queue.get(block=True)
+
+    # prevent pipeline from running while consumer is running
+    with self.__n_consuming_mutex:
+      if self.__n_consuming == 0:
+        self.__consumer_semaphore.acquire()  # first consumer acquires semaphore
+      self.__n_consuming += 1
+
+    assert self._lanes_queue.empty()  # ensure that the queue only ever contains the most recent detection
+    return lanes
+
+  def finish_read_lanes(self):
+    if self._n_consumers == 0:
+      raise RuntimeError('Cannot read lanes as the number of configured consumers is', self._n_consumers)
+
+    # prevent pipeline from running while consumer is running
+    with self.__n_consuming_mutex:
+      if self.__n_consuming == self._n_consumers:
+        self.__n_consuming = 0  # reset the number of consumers 'consuming'
+        self.__consumer_semaphore.release()  # last consumer releases semaphore
+
+  def _add_lanes(self, lanes):
+    # only enqueue if we have a consumer configured, otherwise, fail silently
+    # allows this method can be called by subclasses without having to worry about consumers
+    if self._n_consumers > 0:
+      self._lanes_queue.put(lanes, block=False)
+
   def start(self):
     """
     Starts running the process which then subsequently opens the video and runs the pipeline
@@ -175,7 +218,7 @@ class Pipeline(ABC, Process, Friendable):
     :return: void
     """
 
-    super().start()  # call Process.start() to start the Process execution
+    super().start()  # call Process::start() to start the Process execution
 
   def __open_source(self, src: str) -> None:
     """
@@ -224,7 +267,14 @@ class Pipeline(ABC, Process, Friendable):
           if first_frame:
             self._init_pipeline(self._frame)
             first_frame = False
+
+          # prevent pipeline from running until consumers are done
+          if self._n_consumers > 0:
+            self.__consumer_semaphore.acquire()
           self._run(self._frame)  # run the pipeline
+          if self._n_consumers > 0:
+            self.__consumer_semaphore.release()
+
           if self._show_pipeline:  # display the pipeline
             # self.__display_pipeline()
             self._visualizer.get()
@@ -247,6 +297,8 @@ class Pipeline(ABC, Process, Friendable):
 
       # reset the pipeline now that the current iteration has finished
       self.__clear_pipeline()
+
+    self._add_lanes(constants.SENTINEL)
 
   def __handle_keypress(self, keypress):
     """

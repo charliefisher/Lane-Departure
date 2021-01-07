@@ -23,6 +23,7 @@ class HistogramPeakDetection(Pipeline):
                                         settings.PipelineSettings.HISTOGRAM_PEAK_DETECTION)
 
   def __init__(self, source: str, *,
+               n_consumers: int = 0,
                should_start: bool = True,
                show_pipeline: bool = True,
                debug: bool = False):
@@ -35,7 +36,7 @@ class HistogramPeakDetection(Pipeline):
                   shown and debug statements are enabled
     """
 
-    super().__init__(source, image_mask_enabled=True, should_start=should_start,
+    super().__init__(source, n_consumers=n_consumers, image_mask_enabled=True, should_start=should_start,
                      show_pipeline=show_pipeline, debug=debug)
 
   def _init_pipeline(self, first_frame):
@@ -296,3 +297,5 @@ class HistogramPeakDetection(Pipeline):
     lane_image = self._display_lanes(frame, lanes, overlay_name='Historic Filtered')
     detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
     self._add_knot('Historic Filtered Result', detected_lanes_result, hls=False)
+
+    self._add_lanes(lanes)
