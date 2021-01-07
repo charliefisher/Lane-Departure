@@ -7,7 +7,7 @@ from matplotlib import pyplot as plot
 
 import settings
 from lane_detection.pipeline import Pipeline
-from lane_detection.pipeline.general import region_of_interest
+from lane_detection.pipeline.general import HistoricFill, region_of_interest
 from general.config_dict import config_dict
 
 
@@ -35,6 +35,11 @@ class HistogramPeakDetection(Pipeline):
 
     super().__init__(source, image_mask_enabled=True, should_start=should_start,
                      show_pipeline=show_pipeline, debug=debug)
+
+  def _init_pipeline(self, first_frame):
+    super()._init_pipeline(first_frame)
+    self._historic_fill = HistoricFill(self.fps, HistogramPeakDetection.DEGREE_TO_FIT_TO_LINES,
+                                       max_consecutive_autofills=5)
 
   def _add_knot(self, name: str, image: numpy.array, hls: bool = True):
     if hls:
@@ -101,11 +106,7 @@ class HistogramPeakDetection(Pipeline):
       plot.show()
       time.sleep(7.5)
 
-    # left_points: list[tuple[int, int]] = []
-    # right_points: list[tuple[int, int]] = []
-
     points: list[list[tuple[int, int]]] = [[] for i in range(HistogramPeakDetection.settings.lanes.num_to_detect)]
-
     for window_index in range(num_vertical_windows):
       y_cord = HistogramPeakDetection.settings.lanes.top_offset + window_index * window_height + window_height // 2
 
@@ -118,46 +119,6 @@ class HistogramPeakDetection(Pipeline):
     left_points, right_points = points
     return numpy.array(left_points), numpy.array(right_points)
 
-  def classify_points(self, points, labels = None):
-    points = numpy.float32(points)
-    # # convert lane_lines to numpy.float32
-    # lane_lines = numpy.float32(lane_lines)
-
-    type = 0
-    if HistogramPeakDetection.settings.k_means.epsilon > 0:
-      type += cv2.TERM_CRITERIA_EPS
-    if HistogramPeakDetection.settings.k_means.max_iter > 0:
-      type += cv2.TERM_CRITERIA_MAX_ITER
-    # define criteria for k means
-    criteria = (type, HistogramPeakDetection.settings.k_means.max_iter, HistogramPeakDetection.settings.k_means.epsilon)
-    # run k means
-    compactness, labels, centers = cv2.kmeans(points, HistogramPeakDetection.settings.lanes.num_to_detect, labels,
-                                              criteria, HistogramPeakDetection.settings.k_means.num_attempts,
-                                              # cv2.KMEANS_RANDOM_CENTERS)
-                                              cv2.KMEANS_USE_INITIAL_LABELS)
-    # flatten labels so they can be used for boolean indexing
-    labels = labels.flatten()
-
-    classified_points = HistogramPeakDetection.settings.lanes.num_to_detect * [None]
-    for i in range(HistogramPeakDetection.settings.lanes.num_to_detect):
-      points_in_cluster = points[labels == i]
-      mu_x, mu_y = numpy.mean(points_in_cluster, axis=0)
-      # sigma = numpy.std(lines_in_cluster, axis=0, ddof=1)
-      classified_points[int(not mu_x < 600)] = points_in_cluster.astype(numpy.int32)
-
-    return tuple(classified_points)
-
-  # def reject_outliers(self, data: numpy.array, m: float = 1.5) -> numpy.array:
-  #   mean, std_dev = numpy.average(data[:, 0]), numpy.std(data[:, 0])
-  #   # print('mean', mean, 'std', std_dev)
-  #   return data[numpy.abs(data[:, 0] - mean) < m * std_dev]
-
-  def reject_outliers(self, data: numpy.array, m: float = 1.5) -> numpy.array:
-    dist = numpy.abs(data[:, 0] - numpy.median(data[:, 0]))
-    mdev = numpy.median(dist)
-    std_dev = dist / mdev if mdev else 0.
-    return data[std_dev < m]
-
   def filter_points(self, points: numpy.array, reject_outside_n_std_devs: float = 1.5, max_iterations: int = 5,
                     max_residual: int = 20) -> numpy.array:
 
@@ -166,7 +127,7 @@ class HistogramPeakDetection(Pipeline):
 
     def line_of_best_fit(data: numpy.array) -> tuple[numpy.poly1d, numpy.array, float]:
       assert len(points) > 1  # there are points to fit a line on
-      best_fit_coef = numpy.polyfit(data[:, 1], data[:, 0], deg=1)
+      best_fit_coef = numpy.polyfit(data[:, 1], data[:, 0], deg=HistogramPeakDetection.DEGREE_TO_FIT_TO_LINES)
       best_fit = numpy.poly1d(best_fit_coef)
 
       residuals = numpy.linalg.norm((best_fit(data[:, 1]) - data[:, 0]).reshape(len(data), 1), axis=1)
@@ -194,177 +155,10 @@ class HistogramPeakDetection(Pipeline):
 
     return points
 
-  # def filter_points(self, points: numpy.array, neighborhood_radius: int = 10, min_num_neighbors: int = 4) \
-  #     -> numpy.array:
-  #
-  #   assert len(points) >= 2
-  #   assert numpy.all(numpy.diff(points[:, 1]) >= 0)  # sorted by y value
-  #
-  #   to_delete: list[int] = []
-  #   for i, point in enumerate(points):
-  #     n_neighbors = 0
-  #
-  #     j = i + 1
-  #     while j < len(points):
-  #       diff = points[j] - point
-  #       if diff[1] > neighborhood_radius:  # have travelled at least neighboorhood radius in y
-  #         break
-  #       if numpy.linalg.norm(diff) <= neighborhood_radius:
-  #         n_neighbors += 1
-  #       j += 1
-  #
-  #     j = i - 1
-  #     while j >= 0:
-  #       diff = point - points[j]
-  #       if diff[1] > neighborhood_radius:  # have travelled at least neighboorhood radius in y
-  #         break
-  #       if numpy.linalg.norm(diff) <= neighborhood_radius:
-  #         n_neighbors += 1
-  #       j -= 1
-  #
-  #     if n_neighbors < min_num_neighbors:
-  #       to_delete.append(i)
-  #
-  #   to_delete = numpy.in1d(range(points.shape[0]), to_delete)
-  #   print('will delete', len(to_delete))
-  #   return points[~to_delete]
-
-
-  # def filter_points(self, points: numpy.array, max_horizontal_scatter: int = 100, max_adjacent_skips: int = 5) \
-  #     -> numpy.array:
-  #
-  #   assert len(points) >= 2
-  #   assert numpy.all(numpy.diff(points[:, 1]) >= 0)  # sorted by y value
-  #
-  #   # assert the distance from start of window to end is shorter than length of contiguous chain or another
-  #   # skip window occurs later than is further away than the skip distance (that one must hold the assertion)
-  #   longest_contiguous_chain: list[int] = []
-  #   cur_contiguous_chain: list[int] = [0]
-  #   start_of_skip_window = None
-  #
-  #   i = 1
-  #   while i < len(points) - 1:
-  #     print('contig chain is from', cur_contiguous_chain[0], 'to', cur_contiguous_chain[-1])
-  #     print('cur', points[i, 0], 'avg', numpy.average(points[cur_contiguous_chain[-5:], 0]))
-  #     if abs(points[i, 0] - numpy.average(points[cur_contiguous_chain[-5:], 0])) <= max_horizontal_scatter:  # within scatter tolerance
-  #       cur_contiguous_chain.append(i)
-  #     else:  # too far scattered
-  #       # print('too scattered')
-  #       if i - cur_contiguous_chain[-1] <= max_adjacent_skips:  # the size of this discontinuity is allowed
-  #         # print('part of allowed discont')
-  #         if i - 1 == cur_contiguous_chain[-1]: # this is the start of a discontinuity
-  #           # print('START discont at', i)
-  #           start_of_skip_window = i
-  #       else:  # the discontinuity is too large
-  #         assert start_of_skip_window is not None
-  #         # print('discont is too large')
-  #         # assert len(cur_contiguous_chain) != len(longest_contiguous_chain)
-  #         if len(cur_contiguous_chain) > len(longest_contiguous_chain):
-  #           longest_contiguous_chain = cur_contiguous_chain
-  #         cur_contiguous_chain = [start_of_skip_window]
-  #         i = start_of_skip_window
-  #         # print('reset i to', start_of_skip_window)
-  #     i += 1
-  #
-  #   return points[longest_contiguous_chain]
-
-  # def filter_points(self, points: numpy.array, max_horizontal_scatter: int = 7, max_ambiguous_residual: int = 10) \
-  #       -> numpy.array:
-  #
-  #   assert len(points) >= 2
-  #   assert numpy.all(numpy.diff(points[:, 1]) >= 0)  # sorted by y value
-  #
-  #   # assert the distance from start of window to end is shorter than length of contiguous chain or another
-  #   # skip window occurs later than is further away than the skip distance (that one must hold the assertion)
-  #
-  #   ambiguous_points: list[int] = []
-  #   # this is a trick so that the first point is compared relative to the second point
-  #   cur_window: list[int] = [0]
-  #   next_window: list[int] = []
-  #   for i in range(1, len(points) - 1):
-  #     if points[cur_window[0], 1] == points[i, 1]:  # same y coordinate
-  #       cur_window.append(i)
-  #     elif len(next_window) == 0 or points[next_window[0], 1] == points[i, 1]:  # next window is empty or has same y coordinate
-  #       next_window.append(i)
-  #     else:  # passed the current and next window --> detect ambiguous and iterate windows
-  #       cur_window_points = points[cur_window]
-  #       # print('cur win', cur_window)
-  #       # print('pts', points[cur_window])
-  #       if len(cur_window_points) > 2:
-  #         cur_window_points = self.reject_outliers(points[cur_window])
-  #         # print('no outliers', cur_window_points)
-  #       cur_x = numpy.average(cur_window_points[:, 0])
-  #       # print('cur x', cur_x)
-  #
-  #       for index in next_window:
-  #         # print('next', points[index, 0], 'cur_x', cur_x, 'diff', abs(points[index, 0] - cur_x))
-  #         # append points if the horizontal scatter is too large
-  #         if abs(points[index, 0] - cur_x) >= max_horizontal_scatter:
-  #           ambiguous_points.append(index)
-  #
-  #       cur_window = next_window
-  #       next_window = []
-  #
-  #   print('n ambig', len(ambiguous_points))
-  #   ambiguous_points = numpy.in1d(range(points.shape[0]), ambiguous_points)
-  #   unambiguous_points = points[~ambiguous_points]
-  #
-  #   self._display_points(numpy.zeros_like(self.frame), points[ambiguous_points], overlay_name='Ambiguous Points')
-  #   return unambiguous_points
-  #
-  #   self._display_points(numpy.zeros_like(self.frame), points[ambiguous_points], overlay_name='Ambiguous Points')
-  #   self._display_points(numpy.zeros_like(self.frame), unambiguous_points, overlay_name='UN-Ambiguous Points')
-  #
-  #   best_fit_line = numpy.poly1d(numpy.polyfit(unambiguous_points[:, 1], unambiguous_points[:, 0], deg=1))
-  #
-  #   to_delete: list[int] = []
-  #   for i, point in enumerate(points[ambiguous_points]):
-  #     y = point[1]
-  #     residual = numpy.linalg.norm(best_fit_line(y) - y)
-  #     if residual >= max_ambiguous_residual:
-  #       to_delete.append(i)
-  #
-  #   to_delete = numpy.in1d(range(points.shape[0]), to_delete)
-  #   print('will delete', len(to_delete))
-  #
-  #   return points[~to_delete]
-
-  # def filter_points(self, points: numpy.array, max_adjacent_dist: int = 5, max_adjacent_angle_deg: int = 2)\
-  #     -> numpy.array:
-  #
-  #   points_sorted = numpy.array(sorted(list(points), key=lambda cord: numpy.sum(cord)))
-  #
-  #   i = 0
-  #   while i < len(points_sorted) - 1:
-  #     cur_point = points_sorted[i]
-  #     next_point = points_sorted[i + 1]
-  #     next_line = next_point - cur_point
-  #     next_line_norm = numpy.linalg.norm(next_line)
-  #     if next_line_norm > max_adjacent_dist:
-  #       if i > 0:
-  #         prev_point = points_sorted[i - 1]
-  #         cur_line = cur_point - prev_point
-  #         angle_cosine = numpy.dot(cur_line, next_line) / (numpy.linalg.norm(cur_line) * next_line_norm)
-  #         angle = numpy.degrees(numpy.arccos(numpy.abs(angle_cosine)))
-  #         if angle > max_adjacent_angle_deg:
-  #           # drop this point
-  #           points_sorted = numpy.delete(points_sorted, [i], axis=0)
-  #           i -= 1
-  #     i += 1
-  #
-  #   return points_sorted
-
   def fit_lane_to_points(self, points, polynomial_degree: int = DEGREE_TO_FIT_TO_LINES)\
       -> tuple[numpy.array, numpy.array]:
 
     left_points, right_points = points
-    # fit a polynomial for each lane and return the result
-    # left_lane = HuberRegressor().fit()
-
-    # import statsmodels.api as statsmodels
-    # left_lane = statsmodels.RLM(left_points[:, 0], left_points[:, 1].flatten())
-    # print('left is', left_lane)
-
     left_lane = numpy.polyfit(left_points[:, 1], left_points[:, 0], deg=polynomial_degree)
     right_lane = numpy.polyfit(right_points[:, 1], right_points[:, 0], deg=polynomial_degree)
     return left_lane, right_lane
@@ -417,8 +211,6 @@ class HistogramPeakDetection(Pipeline):
     hls = cv2.cvtColor(frame, cv2.COLOR_RGB2HLS)
 
     # apply gaussian blur, reducing noise in grayscale image, reducing the effect of undesired lines
-    # this is somehwhat redundant as canny already applies a gaussian blur but gives more controlling allowing for a
-    # larger kernel to be used (if desired)
     blurred = cv2.GaussianBlur(hls, HistogramPeakDetection.settings.gaussian_blur.kernel_size,
                                HistogramPeakDetection.settings.gaussian_blur.deviation)
     self._add_knot('Gaussian Blur', blurred)
@@ -449,63 +241,46 @@ class HistogramPeakDetection(Pipeline):
 
     combined_filter = sobel_filter_mask & saturation_filter_mask
     self._add_knot('Combined Filters', combined_filter, hls=False)
-    # combined_filter = sobel_filter_mask
 
+    # fill contours in combined filters
     contours = cv2.findContours(combined_filter, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = contours[0] if len(contours) == 2 else contours[1]
-
     for contour in contours:
       cv2.drawContours(combined_filter, [contour], -1, (255, 255, 255), -1)
-
-    self._add_knot('Combined Filters FILLED CONTOURS', combined_filter, hls=False)
+    self._add_knot('Filled Contours Combined Filters', combined_filter, hls=False)
 
     masked = region_of_interest(self, combined_filter)
     self._add_knot('Region Of Interest Mask', masked, hls=False)
 
-    points = self.get_histogram_peak_points(masked)
-
-    # labels = numpy.append(numpy.zeros((len(points[0]),), numpy.int32), numpy.ones((len(points[1]),), numpy.int32),
-    #                       axis=0)
-    # points = self.classify_points([point for side in points for point in side], labels)
+    # do the 'Histogram Peak Detection'
+    left_points, right_points = self.get_histogram_peak_points(masked)
+    combined_points = [*left_points, *right_points]
 
     # display the detected points on the image
     masked_image_rgb = cv2.cvtColor(masked, cv2.COLOR_GRAY2RGB)
-    left_points, right_points = points
 
-    left_points_image = self._display_points(masked_image_rgb, left_points, color=(255, 255, 0))
-    detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, left_points_image, 1, 0)
-    self._add_knot('Detected Left Points Result', detected_points_result, hls=False)
+    self._display_points(masked_image_rgb, left_points, color=(255, 255, 0), overlay_name='Detected Left Points')
+    self._display_points(masked_image_rgb, right_points, color=(0, 255, 255), overlay_name='Detected Right Points')
 
-    right_points_image = self._display_points(masked_image_rgb, right_points)
-    detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, right_points_image, 1, 0)
-    self._add_knot('Detected Right Points Result', detected_points_result, hls=False)
-
-    points_image = self._display_points(masked_image_rgb, [point for side in points for point in side])
+    points_image = self._display_points(masked_image_rgb, combined_points, display_overlay=False)
     detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, points_image, 1, 0)
     self._add_knot('Detected Points Result', detected_points_result, hls=False)
 
-    # remove outliers from the points
+    # filter the points to remove 'incorrect' detections
     left_points = self.filter_points(left_points)
     right_points = self.filter_points(right_points)
-    points = (left_points, right_points)
-    # left_points = self.reject_outliers(left_points)
-    # right_points = self.reject_outliers(right_points)
+    combined_points = [*left_points, *right_points]
 
-    left_points_image = self._display_points(masked_image_rgb, left_points, color=(255, 255, 0))
-    detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, left_points_image, 1, 0)
-    self._add_knot('Filtered Left Points Result', detected_points_result, hls=False)
+    left_points_image = self._display_points(masked_image_rgb, left_points, color=(255, 255, 0),
+                                             overlay_name='Filtered Left Points')
+    right_points_image = self._display_points(masked_image_rgb, right_points, color=(0, 255, 255),
+                                              overlay_name='Filtered Right Points')
 
-    right_points_image = self._display_points(masked_image_rgb, right_points)
-    detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, right_points_image, 1, 0)
-    self._add_knot('Filtered Right Points Result', detected_points_result, hls=False)
-
-    points_image = self._display_points(masked_image_rgb, [point for side in points for point in side])
+    points_image = self._display_points(masked_image_rgb, combined_points, display_overlay=False)
     detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, points_image, 1, 0)
     self._add_knot('Filtered Points Result', detected_points_result, hls=False)
 
-
-    lanes = self.fit_lane_to_points(points)
-
+    lanes = self.fit_lane_to_points((left_points, right_points))
     self._display_lanes(frame, (lanes[0],), overlay_name='Left Lane')
     self._display_lanes(frame, (lanes[1],), overlay_name='Right Lane')
 
@@ -515,15 +290,7 @@ class HistogramPeakDetection(Pipeline):
     detected_lanes_result = cv2.addWeighted(detected_lanes_result, 1, right_points_image, 1, 0)
     self._add_knot('Detected Lanes Result', detected_lanes_result, hls=False)
 
-
-
-    # filled_combined_filter = self.fill_filter_close_regions(masked)
-    # # filled_combined_filter = masked
-    # self._add_knot('Combined Filters Custom Fill', filled_combined_filter, hls=False)
-
-    # x threshold
-    # saturation threshold
-
-    # combine thresholds into binary
-
-
+    lanes = self._historic_fill.get(numpy.array(lanes))
+    lane_image = self._display_lanes(frame, lanes, overlay_name='Historic Filtered')
+    detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
+    self._add_knot('Historic Filtered Result', detected_lanes_result, hls=False)

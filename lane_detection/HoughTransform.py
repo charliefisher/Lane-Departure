@@ -8,7 +8,7 @@ import time
 from matplotlib import pyplot as plot
 
 from lane_detection.pipeline import Pipeline
-from lane_detection.pipeline.general import region_of_interest
+from lane_detection.pipeline.general import HistoricFill, region_of_interest
 import settings
 
 # import warnings
@@ -37,10 +37,21 @@ class HoughTransform(Pipeline):
                   shown and debug statements are enabled
     """
 
-    self.__past_detected = numpy.empty((0, HoughTransform.settings.lanes.num_to_detect, 2))
-    self.__consecutive_overrides_of_detected_line = numpy.zeros((1, HoughTransform.settings.lanes.num_to_detect))
     super().__init__(source, image_mask_enabled=True, should_start=should_start,
                      show_pipeline=show_pipeline, debug=debug)
+
+  def _historic_lanes_weighting_function(self, x):
+    k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - math.pow(math.e, (-0.05016553 * self.fps)))
+    b = 0.020833333 * self.fps + 1.5
+    # k=-0.35
+    # b=3
+    return numpy.exp(k * x + b)
+
+  def _init_pipeline(self, first_frame):
+    super()._init_pipeline(first_frame)
+    self._historic_fill = HistoricFill(self.fps, HoughTransform.DEGREE_TO_FIT_TO_HOUGH_LINES,
+                                       store_last_n_seconds=1.5,
+                                       historic_weighting_func=self._historic_lanes_weighting_function)
 
   def _canny(self, image):
     """
@@ -179,62 +190,6 @@ class HoughTransform(Pipeline):
       num_datapoints = not_close_index
     return collection
 
-  def _get_weighted_historic_average(self, historic_lines, column):
-    def weighting_function(fps, x):
-      k = -1.333333 - (-0.05972087 / 0.05016553) * (1 - math.pow(math.e, (-0.05016553 * fps)))
-      b = 0.020833333*fps+1.5
-      # k=-0.35
-      # b=3
-      return numpy.exp(k*x+b)
-
-
-    num_past_stored, *remaining = historic_lines.shape
-    if num_past_stored == 0:
-      return None
-
-    return numpy.average(historic_lines[:, column, :], axis=0, weights=weighting_function(self._fps, numpy.arange(historic_lines.shape[0])))
-
-  def _historic_fill(self, column):
-    # TODO: do historic fill using derivatives so it guesses the next line then takes the weighted historic average
-    return self._get_weighted_historic_average(self.__past_detected, column)
-
-
-
-
-
-    # # convert lane_lines to numpy.float32
-    # lane_lines = numpy.float32(lane_lines)
-    #
-    # type = 0
-    # if HoughTransform.settings.k_means.epsilon > 0:
-    #   type += cv2.TERM_CRITERIA_EPS
-    # if HoughTransform.settings.k_means.max_iter > 0:
-    #   type += cv2.TERM_CRITERIA_MAX_ITER
-    # # define criteria for k means
-    # criteria = (type, HoughTransform.settings.k_means.max_iter, HoughTransform.settings.k_means.epsilon)
-    # # criteria = (cv2.TERM_CRITERIA_EPS, 0, 0.5)
-    # # run k means
-    # compactness, labels, centers = cv2.kmeans(lane_lines, HoughTransform.settings.lanes.num_to_detect, None, criteria, HoughTransform.settings.k_means.num_attempts, cv2.KMEANS_RANDOM_CENTERS)
-    # # flatten labels so they can be used for boolean indexing
-    # labels = labels.flatten()
-
-    # for i in range(HoughTransform.settings.lanes.num_to_detect):
-    #   lines_in_cluster = lane_lines[labels == i]
-      # print('labeled', lines_in_cluseter)
-      # mu, sigma = numpy.mean(lines_in_cluseter, axis=0), numpy.std(lines_in_cluseter, axis=0, ddof=1)
-      # print('mu, sigma', mu, sigma)
-      # print(sigma[~numpy.isnan(sigma)])
-      # print('simga', numpy.isfinite(sigma[0]) and numpy.isfinite(sigma[1]))
-      # if numpy.isfinite(sigma[0]) and numpy.isfinite(sigma[1]):
-      #   print('filter')
-      #   lines_in_cluseter = lines_in_cluseter[numpy.all(numpy.abs(lines_in_cluseter - mu) < 1.0*sigma, axis=1)]
-      #   compactness, labels, centers = cv2.kmeans(lines_in_cluseter, 1, None, criteria, HoughTransform.settings.k_means.num_attempts, cv2.KMEANS_RANDOM_CENTERS)
-      #   print('lables', labels)
-      #   print('lines_in_cluster', lines_in_cluseter)
-      #   print(len(labels) == len(lines_in_cluseter))
-      #   lines_in_cluseter = lines_in_cluseter[labels == i]
-
-
   def _run(self, frame):
     """
     Hough Transform is run on the frame to detect the lane lines
@@ -317,38 +272,7 @@ class HoughTransform(Pipeline):
     detected_lanes_result = cv2.addWeighted(frame, 0.8, detected_lanes_overlay, 1, 0)
     self._add_knot('Detected Lanes Result', detected_lanes_result)
 
-    past_lines = numpy.empty((1, HoughTransform.settings.lanes.num_to_detect, 2))
-    for i in range(HoughTransform.settings.lanes.num_to_detect):
-      # get the predicted future line from the past detected lines
-      historic_fill = self._historic_fill(column=i)
-
-      # if no lane was detected, use the predicted one
-      if not lanes[i].any():
-        lanes[i] = historic_fill
-      else:
-        # use a weighted average of past and detected line to smooth result
-        lanes[i] = self._get_weighted_historic_average(numpy.insert(self.__past_detected, 0, numpy.array([lanes]), axis=0), column=i)
-        # compare the detected lane with what we expect to find
-        # do not override the detected result with the predicted result if that has been done too many times consecutively
-        if self.__consecutive_overrides_of_detected_line[0][i] < 2:
-          if historic_fill is not None:
-            # calculate difference between predicted and detected lines
-            last_and_cur_diff = numpy.fabs(lanes[i] - self.__past_detected[0][i])
-            # check if the difference was too large, and if so use the predicted line
-            if last_and_cur_diff[0] > 0.075 or last_and_cur_diff[1] > 35:
-              self.__consecutive_overrides_of_detected_line[0][i] += 1
-              lanes[i] = historic_fill
-        else:
-          self.__consecutive_overrides_of_detected_line[0][i] = 0
-
-      past_lines[0][i] = lanes[i]
-
-    if past_lines[0].all():
-      self.__past_detected = numpy.insert(self.__past_detected, 0, past_lines, axis=0)
-
-    if self.__past_detected.shape[0] > int(round(1.5*self._fps)):
-      self.__past_detected = numpy.delete(self.__past_detected, self.__past_detected.shape[0]-1, axis=0)
-
-    fill_and_average_overlay = self._display_lines(frame, lanes)
-    fill_and_average_result = cv2.addWeighted(frame, 0.8, fill_and_average_overlay, 1, 0)
-    self._add_knot('Fill And Average Lanes Result', fill_and_average_result)
+    lanes = self._historic_fill.get(numpy.array(lanes))
+    lane_image = self._display_lines(frame, lanes, overlay_name='Historic Filtered')
+    detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
+    self._add_knot('Historic Filtered Result', detected_lanes_result)
