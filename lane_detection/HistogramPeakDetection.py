@@ -8,8 +8,8 @@ from matplotlib import pyplot as plot
 import settings
 from general import constants
 from general.config_dict import config_dict
-from lane_detection.pipeline import Pipeline
-from lane_detection.pipeline.general import HistoricFill, region_of_interest
+from lane_detection.pipeline import Pipeline, general
+from lane_detection.pipeline.general import HistoricFill, region_of_interest, display_lanes
 
 
 
@@ -44,7 +44,7 @@ class HistogramPeakDetection(Pipeline):
     self._historic_fill = HistoricFill(self.fps, HistogramPeakDetection.DEGREE_TO_FIT_TO_LINES,
                                        max_consecutive_autofills=5)
 
-  def _add_knot(self, name: str, image: numpy.array, hls: bool = True):
+  def _add_knot(self, name: str, image: numpy.array, hls: bool = False):
     if hls:
       image = cv2.cvtColor(image, cv2.COLOR_HLS2RGB)
     return super()._add_knot(name, image)
@@ -77,7 +77,7 @@ class HistogramPeakDetection(Pipeline):
       -> tuple[numpy.array, numpy.array]:
 
     height, width, *_ = detected_image.shape
-    height -= HistogramPeakDetection.settings.lanes.bottom_offset + HistogramPeakDetection.settings.lanes.top_offset
+    height -= general.pipeline_settings.lanes.bottom_offset + general.pipeline_settings.lanes.top_offset
     if height % window_height != 0:
       raise FloatingPointError("window_height must evenly divide the detected_image height")
     num_vertical_windows = height // window_height
@@ -87,8 +87,8 @@ class HistogramPeakDetection(Pipeline):
                                      width // constants.NUM_LANES_TO_DETECT),
                                     numpy.float)
     for i in range(num_vertical_windows):
-      window = detected_image[HistogramPeakDetection.settings.lanes.top_offset + i * window_height:
-                              HistogramPeakDetection.settings.lanes.top_offset + (i+1) * window_height + 1, :]
+      window = detected_image[general.pipeline_settings.lanes.top_offset + i * window_height:
+                              general.pipeline_settings.lanes.top_offset + (i+1) * window_height + 1, :]
       vertical_window_average = numpy.average(window, axis=0)
       vertical_averages[0, i, :] = vertical_window_average[0: width // constants.NUM_LANES_TO_DETECT]
       vertical_averages[1, i, :] = vertical_window_average[width // constants.NUM_LANES_TO_DETECT : ]
@@ -111,7 +111,7 @@ class HistogramPeakDetection(Pipeline):
 
     points: list[list[tuple[int, int]]] = [[] for i in range(constants.NUM_LANES_TO_DETECT)]
     for window_index in range(num_vertical_windows):
-      y_cord = HistogramPeakDetection.settings.lanes.top_offset + window_index * window_height + window_height // 2
+      y_cord = general.pipeline_settings.lanes.top_offset + window_index * window_height + window_height // 2
 
       for lane in range(constants.NUM_LANES_TO_DETECT):
         for i in range(n_max_per_window):
@@ -159,12 +159,27 @@ class HistogramPeakDetection(Pipeline):
     return points
 
   def fit_lane_to_points(self, points, polynomial_degree: int = DEGREE_TO_FIT_TO_LINES)\
-      -> tuple[numpy.array, numpy.array]:
+      -> numpy.array:
 
+    # predict x from y coordinate
     left_points, right_points = points
     left_lane = numpy.polyfit(left_points[:, 1], left_points[:, 0], deg=polynomial_degree)
     right_lane = numpy.polyfit(right_points[:, 1], right_points[:, 0], deg=polynomial_degree)
-    return left_lane, right_lane
+    polyfit_lanes = numpy.array([left_lane, right_lane])
+
+    # find the inverse function - i.e. convert so that y is the dependant variable
+    # since there is no generic solution for finding an inverse function, we do it on a case by case basis
+    # only polynomial_degree == 1 is implemented as a higher order polynomial is never fitted to the data
+    if polynomial_degree == 1:
+      lanes = numpy.ones_like(polyfit_lanes)
+      for i, lane in enumerate(polyfit_lanes):
+        lanes[i] /= lane[0]  # m_new = 1/m_old
+        lanes[i][1] *= -lane[1]  # b_new = -b_old/m_old
+    else:
+      raise NotImplementedError('Finding the inverse function for polynomial of degree {deg} has not been implemented yet'
+                                .format(deg=polynomial_degree))
+
+    return lanes
 
   def _display_points(self, image, points, radius: int = 5, color: tuple[int, int, int] = (255, 0, 255),
                       display_overlay: bool = True, overlay_name: str = 'Points') -> numpy.array:
@@ -174,27 +189,6 @@ class HistogramPeakDetection(Pipeline):
     if display_overlay:
       self._add_knot(overlay_name, points_image, hls=False)
     return points_image
-
-  def _display_lanes(self, image, lanes, color: tuple[int, int, int] = (0, 255, 0), thickness: int = 10,
-                     display_overlay: bool = True, overlay_name: str = 'Lanes') -> numpy.array:
-
-    height, *_ = image.shape
-    lin = numpy.linspace(HistogramPeakDetection.settings.lanes.top_offset,
-                         height - HistogramPeakDetection.settings.lanes.bottom_offset,
-                         num=150, dtype=numpy.uint16)
-    polylines = numpy.empty((len(lanes), *lin.shape, 2), numpy.int32)
-    for lane, lane_poly_coeff in enumerate(lanes):
-      lane_poly = numpy.poly1d(lane_poly_coeff)
-      for i, val in enumerate(lin):
-        polylines[lane, i, :] = numpy.array([lane_poly(val), val], numpy.int32)
-
-    lane_image = numpy.empty_like(image)
-    for lane in range(len(lanes)):
-      cv2.polylines(lane_image, numpy.int32([polylines[lane, :]]), False, color, thickness)
-    if display_overlay:
-      self._add_knot(overlay_name, lane_image, hls=False)
-    return lane_image
-
 
   def _run(self, frame):
     """
@@ -209,14 +203,14 @@ class HistogramPeakDetection(Pipeline):
     """
 
     frame = numpy.copy(frame)
-    self._add_knot('Raw', frame, hls=False)
+    self._add_knot('Raw', frame)
 
     hls = cv2.cvtColor(frame, cv2.COLOR_RGB2HLS)
 
     # apply gaussian blur, reducing noise in grayscale image, reducing the effect of undesired lines
     blurred = cv2.GaussianBlur(hls, HistogramPeakDetection.settings.gaussian_blur.kernel_size,
                                HistogramPeakDetection.settings.gaussian_blur.deviation)
-    self._add_knot('Gaussian Blur', blurred)
+    self._add_knot('Gaussian Blur', blurred, hls=True)
 
     hls_64f = blurred.astype(numpy.float)
     h_channel = hls_64f[:, :, 0]
@@ -231,29 +225,29 @@ class HistogramPeakDetection(Pipeline):
     self._add_knot('Sobel X', sobelx_scaled, hls=False)
 
     sobel_filter_mask = self.filter_thresholds(sobelx_scaled, (125, 255))
-    self._add_knot('Sobel  Filter Mask', sobel_filter_mask, hls=False)
+    self._add_knot('Sobel  Filter Mask', sobel_filter_mask)
     sobel_filtered = cv2.bitwise_and(sobelx_scaled, sobel_filter_mask)
-    self._add_knot('Sobel  Filtered', sobel_filtered, hls=False)
+    self._add_knot('Sobel  Filtered', sobel_filtered)
 
     s_channel = s_channel.astype(numpy.uint8)
-    self._add_knot('Saturation  Channel', s_channel, hls=False)
+    self._add_knot('Saturation  Channel', s_channel)
     saturation_filter_mask = self.filter_thresholds(s_channel, (6, 85))
-    self._add_knot('Saturation  Filter Mask', saturation_filter_mask, hls=False)
+    self._add_knot('Saturation  Filter Mask', saturation_filter_mask)
     saturation_filtered = cv2.bitwise_and(s_channel, saturation_filter_mask)
-    self._add_knot('Saturation  Filtered', saturation_filtered, hls=False)
+    self._add_knot('Saturation  Filtered', saturation_filtered)
 
     combined_filter = sobel_filter_mask & saturation_filter_mask
-    self._add_knot('Combined Filters', combined_filter, hls=False)
+    self._add_knot('Combined Filters', combined_filter)
 
     # fill contours in combined filters
     contours = cv2.findContours(combined_filter, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = contours[0] if len(contours) == 2 else contours[1]
     for contour in contours:
       cv2.drawContours(combined_filter, [contour], -1, (255, 255, 255), -1)
-    self._add_knot('Filled Contours Combined Filters', combined_filter, hls=False)
+    self._add_knot('Filled Contours Combined Filters', combined_filter)
 
     masked = region_of_interest(self, combined_filter)
-    self._add_knot('Region Of Interest Mask', masked, hls=False)
+    self._add_knot('Region Of Interest Mask', masked)
 
     # do the 'Histogram Peak Detection'
     left_points, right_points = self.get_histogram_peak_points(masked)
@@ -267,7 +261,7 @@ class HistogramPeakDetection(Pipeline):
 
     points_image = self._display_points(masked_image_rgb, combined_points, display_overlay=False)
     detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, points_image, 1, 0)
-    self._add_knot('Detected Points Result', detected_points_result, hls=False)
+    self._add_knot('Detected Points Result', detected_points_result)
 
     # filter the points to remove 'incorrect' detections
     left_points = self.filter_points(left_points)
@@ -281,21 +275,21 @@ class HistogramPeakDetection(Pipeline):
 
     points_image = self._display_points(masked_image_rgb, combined_points, display_overlay=False)
     detected_points_result = cv2.addWeighted(masked_image_rgb, 0.5, points_image, 1, 0)
-    self._add_knot('Filtered Points Result', detected_points_result, hls=False)
+    self._add_knot('Filtered Points Result', detected_points_result)
 
     lanes = self.fit_lane_to_points((left_points, right_points))
-    self._display_lanes(frame, (lanes[0],), overlay_name='Left Lane')
-    self._display_lanes(frame, (lanes[1],), overlay_name='Right Lane')
+    display_lanes(frame, numpy.array([lanes[0]]), self._add_knot, overlay_name='Left Lane')
+    display_lanes(frame, numpy.array([lanes[1]]), self._add_knot, overlay_name='Right Lane')
 
-    lane_image = self._display_lanes(frame, lanes)
+    lane_image = display_lanes(frame, lanes, self._add_knot)
     detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
     detected_lanes_result = cv2.addWeighted(detected_lanes_result, 1, left_points_image, 1, 0)
     detected_lanes_result = cv2.addWeighted(detected_lanes_result, 1, right_points_image, 1, 0)
-    self._add_knot('Detected Lanes Result', detected_lanes_result, hls=False)
+    self._add_knot('Detected Lanes Result', detected_lanes_result)
 
-    lanes = self._historic_fill.get(numpy.array(lanes))
-    lane_image = self._display_lanes(frame, lanes, overlay_name='Historic Filtered')
+    lanes = self._historic_fill.get(lanes)
+    lane_image = display_lanes(frame, lanes, self._add_knot, overlay_name='Historic Filtered')
     detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
-    self._add_knot('Historic Filtered Result', detected_lanes_result, hls=False)
+    self._add_knot('Historic Filtered Result', detected_lanes_result)
 
     self._add_lanes(lanes)

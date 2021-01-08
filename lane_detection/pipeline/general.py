@@ -5,17 +5,20 @@ Any logic that is not pipeline specific should reside in this file.
 """
 
 
-import functools
 from typing import Callable, Optional
 
 import cv2
 import numpy
 
-import lane_detection.pipeline
+import settings
+import lane_detection.pipeline as pipeline_
 from general import constants
 
 
-def region_of_interest(pipeline, image) -> numpy.array:
+pipeline_settings = settings.load(settings.SettingsCategories.PIPELINES, settings.PipelineSettings.GENERAL)
+
+
+def region_of_interest(pipeline: 'pipeline_.Pipeline', image: numpy.array) -> numpy.array:
   """
   Applies the region of interest mask to a given image
 
@@ -41,6 +44,72 @@ def region_of_interest(pipeline, image) -> numpy.array:
   masked = cv2.bitwise_and(image, mask)
   # return the masked image
   return masked
+
+
+def convert_line_from_slope_intercept_to_cords(line: numpy.array) -> numpy.array:
+  if not line.all():
+    return None
+  m, b = line
+  y1 = pipeline_settings.window.height - pipeline_settings.lanes.top_offset
+  y2 = pipeline_settings.lanes.bottom_offset
+  x1 = int((y1 - b) / m)
+  x2 = int((y2 - b) / m)
+  return numpy.array([x1, y1, x2, y2], numpy.int32).reshape(4)
+
+
+def convert_lines_from_slope_intercept_to_cords(lines: numpy.array) -> numpy.array:
+  cord_lines = numpy.empty((0, 4), numpy.int32)
+  for line in lines:
+    cords = convert_line_from_slope_intercept_to_cords(line)
+    cord_lines = numpy.append(cord_lines, cords, axis=0)
+  return cord_lines
+
+
+def display_lines(image: numpy.array, lines: numpy.array, display_func: Callable[[str, numpy.array], None],
+                  color: tuple[int, int, int] = (0, 255, 0), thickness: int = 10, display_overlay: bool = True,
+                  overlay_name: str = 'Lines') -> numpy.array:
+  line_image = numpy.zeros_like(image)
+  if lines is not None:
+    for line in lines:
+      if line.shape[0] == 2:
+        line = convert_line_from_slope_intercept_to_cords(line)
+      if line is not None:
+        x1, y1, x2, y2 = line.reshape(4)
+        # point 1, point 2, color of lines
+        # line thickness in pixels
+        cv2.line(line_image, (x1, y1), (x2, y2), color, thickness)
+  if display_overlay:
+    display_func(overlay_name, line_image)
+  return line_image
+
+
+def display_lanes(image: numpy.array, lanes: numpy.array, display_func: Callable[[str, numpy.array], None],
+                  color: tuple[int, int, int] = (0, 255, 0), thickness: int = 10, display_overlay: bool = True,
+                  overlay_name: str = 'Lanes') -> numpy.array:
+
+  n_lanes, poly_degree = lanes.shape
+  poly_degree -= 1
+
+  if poly_degree == 1:
+    return display_lines(image, lanes, display_func, display_overlay=display_overlay, overlay_name=overlay_name)
+  else:
+    print('using polylines')
+    height, *_ = image.shape
+    lin = numpy.linspace(pipeline_settings.lanes.top_offset,
+                         height - pipeline_settings.lanes.bottom_offset,
+                         num=150, dtype=numpy.uint16)
+    polylines = numpy.empty((len(lanes), *lin.shape, 2), numpy.int32)
+    for lane, lane_poly_coeff in enumerate(lanes):
+      lane_poly = numpy.poly1d(lane_poly_coeff)
+      for i, val in enumerate(lin):
+        polylines[lane, i, :] = numpy.array([lane_poly(val), val], numpy.int32)
+
+    lane_image = numpy.empty_like(image)
+    for lane in range(len(lanes)):
+      cv2.polylines(lane_image, numpy.int32([polylines[lane, :]]), False, color, thickness)
+    if display_overlay:
+     display_func(overlay_name, lane_image)
+    return lane_image
 
 
 class HistoricFill:
@@ -141,5 +210,3 @@ class HistoricFill:
     assert len(past_lanes) > 0
     return numpy.average(past_lanes[:, lane], axis=0,
                          weights=self._historic_weighting_func(past_ages))
-
-

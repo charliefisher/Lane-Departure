@@ -8,7 +8,7 @@ from matplotlib import pyplot as plot
 import settings
 from general import constants
 from lane_detection.pipeline import Pipeline
-from lane_detection.pipeline.general import HistoricFill, region_of_interest
+from lane_detection.pipeline.general import HistoricFill, region_of_interest, display_lines, display_lanes
 
 # import warnings
 # warnings.simplefilter('ignore', numpy.RankWarning)
@@ -88,39 +88,6 @@ class HoughTransform(Pipeline):
     canny = cv2.Canny(modified, HoughTransform.settings.canny.lower_threshold, HoughTransform.settings.canny.upper_threshold)
     self._add_knot('Canny', canny)
     return canny
-
-  def _convert_line_from_slope_intercept_to_cords(self, line):
-    if not line.all():
-      return None
-    m, b = line
-    y1 = 500
-    y2 = 200
-    x1 = int((y1 - b) / m)
-    x2 = int((y2 - b) / m)
-    return numpy.array([x1, y1, x2, y2], numpy.int32).reshape(4)
-
-  def _convert_lines_from_slope_intercept_to_cords(self, lines):
-    cord_lines = numpy.empty((0, 4), numpy.int32)
-    for line in lines:
-      cords = self._convert_line_from_slope_intercept_to_cords(line)
-      cord_lines = numpy.append(cord_lines, cords, axis=0)
-    return cord_lines
-
-  def _display_lines(self, image, lines, display_overlay=True, overlay_name='Lines'):
-    line_image = numpy.zeros_like(image)
-    if lines is not None:
-      for line in lines:
-        if line.shape[0] == 2:
-          line = self._convert_line_from_slope_intercept_to_cords(line)
-        if line is not None:
-          x1, y1, x2, y2 = line.reshape(4)
-          # point 1, point 2, color of lines
-          # line thickness in pixels
-          cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 10)
-    if display_overlay:
-      self._add_knot(overlay_name, line_image)
-    return line_image
-
 
   def _filter_hough_lines_on_slope(self, dirty_lines):
     # create a matrix to hold the lines that should be kept (i.e. met the slope criterion)
@@ -225,13 +192,13 @@ class HoughTransform(Pipeline):
     hough_lines = cv2.HoughLinesP(masked, HoughTransform.settings.hough_lines.rho, numpy.deg2rad(HoughTransform.settings.hough_lines.theta), HoughTransform.settings.hough_lines.threshold, numpy.array([]), minLineLength=HoughTransform.settings.hough_lines.min_line_length, maxLineGap=HoughTransform.settings.hough_lines.max_line_gap)
 
     # add the result of the hough lines to the pipeline
-    hough_overlay = self._display_lines(frame, hough_lines)
+    hough_overlay = display_lines(frame, hough_lines, self._add_knot)
     hough_result = cv2.addWeighted(frame, 0.8, hough_overlay, 1, 0)
     self._add_knot('Hough Raw Result', hough_result)
 
     # filter lines based on slope and add to the pipeline
     filtered_lines = self._filter_hough_lines_on_slope(hough_lines)
-    filtered_lines_overlay = self._display_lines(frame, filtered_lines)
+    filtered_lines_overlay = display_lines(frame, filtered_lines, self._add_knot)
     filtered_lines_result = cv2.addWeighted(frame, 0.8, filtered_lines_overlay, 1, 0)
     self._add_knot('Slope Filtered Lines Result', filtered_lines_result)
 
@@ -249,7 +216,7 @@ class HoughTransform(Pipeline):
       num_lines, *remaining = lane_lines.shape
 
       # add the classified lines to the pipeline
-      classified_lines_overlay = self._display_lines(frame, lane_lines, display_overlay=False)
+      classified_lines_overlay = display_lanes(frame, lane_lines, self._add_knot, display_overlay=False)
       classified_lines_result = cv2.addWeighted(frame, 0.8, classified_lines_overlay, 1, 0)
       self._add_knot('{side} Lane Lines'.format(side='Left' if i == 0 else 'Right'), classified_lines_result)
 
@@ -259,21 +226,21 @@ class HoughTransform(Pipeline):
         lines_with_closeness_filter = numpy.append(lines_with_closeness_filter, lane_lines, axis=0)
       # if any lanes were detected, average the result
       if num_lines != 0:
-        # averaged_lane = numpy.average(lane_lines[labels == i], axis=0) #old line when closeness filter did not exist
+        # averaged_lane = numpy.average(lane_lines[labels == i], axis=0) # old line when closeness filter did not exist
         averaged_lane = numpy.average(lane_lines, axis=0).reshape(1, 2)
         # add the cluster's average lane to the matrix of lane lines
         lanes[i] = averaged_lane
 
-    closeness_filter_applied_overlay = self._display_lines(frame, lines_with_closeness_filter)
+    closeness_filter_applied_overlay = display_lanes(frame, lines_with_closeness_filter, self._add_knot)
     closeness_filter_applied_result = cv2.addWeighted(frame, 0.8, closeness_filter_applied_overlay, 1, 0)
     self._add_knot('Closeness Filter Result', closeness_filter_applied_result)
 
-    detected_lanes_overlay = self._display_lines(frame, lanes)
+    detected_lanes_overlay = display_lanes(frame, lanes, self._add_knot)
     detected_lanes_result = cv2.addWeighted(frame, 0.8, detected_lanes_overlay, 1, 0)
     self._add_knot('Detected Lanes Result', detected_lanes_result)
 
     lanes = self._historic_fill.get(numpy.array(lanes))
-    lane_image = self._display_lines(frame, lanes, overlay_name='Historic Filtered')
+    lane_image = display_lanes(frame, lanes, self._add_knot, overlay_name='Historic Filtered')
     detected_lanes_result = cv2.addWeighted(frame, 0.75, lane_image, 1, 0)
     self._add_knot('Historic Filtered Result', detected_lanes_result)
 
