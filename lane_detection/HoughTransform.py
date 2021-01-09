@@ -192,13 +192,13 @@ class HoughTransform(Pipeline):
     hough_lines = cv2.HoughLinesP(masked, HoughTransform.settings.hough_lines.rho, numpy.deg2rad(HoughTransform.settings.hough_lines.theta), HoughTransform.settings.hough_lines.threshold, numpy.array([]), minLineLength=HoughTransform.settings.hough_lines.min_line_length, maxLineGap=HoughTransform.settings.hough_lines.max_line_gap)
 
     # add the result of the hough lines to the pipeline
-    hough_overlay = display_lines(frame, hough_lines, self._add_knot)
+    hough_overlay, *_ = display_lines(frame, hough_lines, self._add_knot)
     hough_result = cv2.addWeighted(frame, 0.8, hough_overlay, 1, 0)
     self._add_knot('Hough Raw Result', hough_result)
 
     # filter lines based on slope and add to the pipeline
     filtered_lines = self._filter_hough_lines_on_slope(hough_lines)
-    filtered_lines_overlay = display_lines(frame, filtered_lines, self._add_knot)
+    filtered_lines_overlay, *_ = display_lines(frame, filtered_lines, self._add_knot)
     filtered_lines_result = cv2.addWeighted(frame, 0.8, filtered_lines_overlay, 1, 0)
     self._add_knot('Slope Filtered Lines Result', filtered_lines_result)
 

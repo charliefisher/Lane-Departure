@@ -111,7 +111,10 @@ class Pipeline(ABC, Process, Friendable):
       self._lanes_queue = Queue()
       self.__n_consuming = 0  # tracks the number of consumers currently 'consuming' the detected result
       self.__n_consuming_mutex = Lock()  # blocks access to self.__n_consuming
-      self.__consumer_semaphore = BoundedSemaphore(1)  # used to block pipeline from running while consumers are
+      # used to block pipeline from running while consumers are
+      self.__consumer_semaphore = BoundedSemaphore(1)
+      # used to prevent multiple iterations of pipeline from running before being consumed
+      self.__producer_sempahore = BoundedSemaphore(1)
 
     # private - only accessible by class
     self.__current_knots = []  # maybe not be filled (most likely, will be partially filled)
@@ -178,7 +181,7 @@ class Pipeline(ABC, Process, Friendable):
     self._debug = value
 
 ##### Method Definitions #####
-  def start_read_lanes(self):
+  def start_consumption(self):
     if self._n_consumers == 0:
       raise RuntimeError('Cannot read lanes as the number of configured consumers is', self._n_consumers)
 
@@ -195,7 +198,7 @@ class Pipeline(ABC, Process, Friendable):
     assert self._lanes_queue.empty()  # ensure that the queue only ever contains the most recent detection
     return lanes
 
-  def finish_read_lanes(self):
+  def end_consumption(self):
     if self._n_consumers == 0:
       raise RuntimeError('Cannot read lanes as the number of configured consumers is', self._n_consumers)
 
@@ -204,12 +207,13 @@ class Pipeline(ABC, Process, Friendable):
       if self.__n_consuming == self._n_consumers:
         self.__n_consuming = 0  # reset the number of consumers 'consuming'
         self.__consumer_semaphore.release()  # last consumer releases semaphore
+        self.__producer_sempahore.release()  # allow pipeline to start on next iteration
 
   def _add_lanes(self, lanes):
     # only enqueue if we have a consumer configured, otherwise, fail silently
     # allows this method can be called by subclasses without having to worry about consumers
     if self._n_consumers > 0:
-      self._lanes_queue.put(lanes, block=False)
+      self._lanes_queue.put((self._frame, lanes), block=False)
 
   def start(self):
     """
@@ -270,10 +274,15 @@ class Pipeline(ABC, Process, Friendable):
 
           # prevent pipeline from running until consumers are done
           if self._n_consumers > 0:
-            self.__consumer_semaphore.acquire()
+            # wait until consumer is finished consuming
+            self.__producer_sempahore.acquire()
+            self.__producer_sempahore.release()
+            self.__consumer_semaphore.acquire()  # prevent consumers from running until after this iteration
           self._run(self._frame)  # run the pipeline
           if self._n_consumers > 0:
-            self.__consumer_semaphore.release()
+            self.__consumer_semaphore.release()  # allow consumers to run on this iteration
+            # prevent pipeline from continuing until the current iteration is consumed
+            self.__producer_sempahore.acquire()
 
           if self._show_pipeline:  # display the pipeline
             # self.__display_pipeline()

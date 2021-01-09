@@ -65,33 +65,45 @@ def convert_lines_from_slope_intercept_to_cords(lines: numpy.array) -> numpy.arr
   return cord_lines
 
 
-def display_lines(image: numpy.array, lines: numpy.array, display_func: Callable[[str, numpy.array], None],
+def display_lines(image: numpy.array, lines: numpy.array,
+                  display_func: Optional[Callable[[str, numpy.array], None]] = None,
                   color: tuple[int, int, int] = (0, 255, 0), thickness: int = 10, display_overlay: bool = True,
                   overlay_name: str = 'Lines') -> numpy.array:
+
+  if display_overlay:
+    assert display_func is not None
+
   line_image = numpy.zeros_like(image)
+  line_cords = numpy.empty((len(lines), 4), numpy.uint16)
   if lines is not None:
-    for line in lines:
+    for i, line in enumerate(lines):
       if line.shape[0] == 2:
         line = convert_line_from_slope_intercept_to_cords(line)
       if line is not None:
         x1, y1, x2, y2 = line.reshape(4)
+        line_cords[i] = line
         # point 1, point 2, color of lines
         # line thickness in pixels
         cv2.line(line_image, (x1, y1), (x2, y2), color, thickness)
   if display_overlay:
     display_func(overlay_name, line_image)
-  return line_image
+  return line_image, line_cords
 
 
-def display_lanes(image: numpy.array, lanes: numpy.array, display_func: Callable[[str, numpy.array], None],
+def display_lanes(image: numpy.array, lanes: numpy.array,
+                  display_func: Optional[Callable[[str, numpy.array], None]] = None,
                   color: tuple[int, int, int] = (0, 255, 0), thickness: int = 10, display_overlay: bool = True,
                   overlay_name: str = 'Lanes') -> numpy.array:
+
+  if display_overlay:
+    assert display_func is not None
 
   n_lanes, poly_degree = lanes.shape
   poly_degree -= 1
 
   if poly_degree == 1:
-    return display_lines(image, lanes, display_func, display_overlay=display_overlay, overlay_name=overlay_name)
+    line_image, line_cords = display_lines(image, lanes, display_func, display_overlay=display_overlay, overlay_name=overlay_name)
+    return line_image
   else:
     print('using polylines')
     height, *_ = image.shape
