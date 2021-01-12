@@ -45,7 +45,7 @@ def __parse_args():
   """
   Parses the command line arguments and sets necessary global flags accordingly
 
-  If no arguments are given, the defaults are used according to config.ini
+  If no arguments are given, the defaults are used according to settings/input/sources.cfg
 
   Arguments:
     --show-pipeline | -p    indicates whether each processing step in the pipeline should be displayed
